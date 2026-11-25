@@ -11,6 +11,7 @@
     "owner": "",
     "repo": ""
   },
+  "voteUrl": "",
   "labUrl": "",
   "labName": "Lab",
   "contactEmail": "",
@@ -49,7 +50,6 @@
   },
   "participation": {
     "intro": "Sessions are open to anyone, including people outside the group and prospective students. Come to listen and ask questions, or volunteer to present something you want to understand better.",
-    "presentSurveyId": "present",
-    "joinSurveyId": "join"
+    "presentSurveyId": "present"
   }
 }

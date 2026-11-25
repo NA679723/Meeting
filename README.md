@@ -8,7 +8,7 @@ A one-page site for a paper reading group, hosted free on GitHub Pages. It has:
 - **Schedule**: month calendar, upcoming and past sessions, Theory and Practice track filters, plus a calendar feed people can subscribe to
 - **Shared papers**: searchable library with PDF links and status (scheduled, discussed, not yet scheduled)
 - **People**: organizers and participants, with GitHub avatars
-- **Surveys**: topic votes, session feedback, availability polls, presenter sign-up and join requests. Answers are saved as GitHub Issues and the results show up as charts on the page.
+- **Vote**: one simple form for topics and meeting times, with live results, plus session feedback and presenter sign-up. Answers are saved in a Google Sheet you own.
 
 Everything is driven by five JSON files in `data/`. There is no build step and nothing to install. The members, sessions and papers files start empty: fill them in using the examples below.
 
@@ -26,7 +26,7 @@ Every push to `main` redeploys the site and rebuilds the calendar feed.
 
 > Prefer not to use Actions? Choose **Deploy from a branch** (`main`, `/ (root)`) instead. Everything works except the subscribable feed. Visitors can still download the `.ics` file and add single sessions to Google Calendar.
 
-Issues must be turned on (they are by default) for surveys to work.
+Then connect voting (below) so votes are saved.
 
 ## Edit content
 
@@ -38,7 +38,7 @@ All content lives in `data/`. You can edit files directly on GitHub: open the fi
 | `sessions.json` | Every session: date, track, title, papers, presenters, prep, questions, slides, recording |
 | `papers.json` | The shared paper library |
 | `members.json` | Organizers and participants |
-| `surveys.json` | Surveys and their questions |
+| `surveys.json` | The vote and other forms |
 
 If the site shows a yellow "Something in the data files needs fixing" banner, a JSON file has a typo. The message names the file. Missing commas and unmatched quotes are the usual cause. The Actions run also fails with the same message, so broken data never goes live silently.
 
@@ -91,25 +91,31 @@ The "Next session" panel and the paper statuses update automatically by date.
 ### Add a member
 
 ```json
-{ "id": "jdoe", "name": "Jane Doe", "role": "participant", "title": "PhD student, Statistics",
+{ "id": "jane", "name": "Jane", "role": "member", "title": "PhD student, Statistics",
   "interests": ["Mediation"], "github": "janedoe", "website": "https://..." }
 ```
 
-`role` is `organizer` or `participant`. Setting `github` shows the member's GitHub profile picture. Organizers can also have an `email`.
+`role` is `organizer` or `member`. While nobody is an organizer, the page shows one Members list. Members also appear in the vote's name list. Setting `github` shows the member's GitHub profile picture. Organizers can also have an `email`.
 
-## Surveys
+## Vote and forms
 
-Each survey in `surveys.json` becomes a form on the page. When someone submits, a prefilled **GitHub issue** opens in a new tab. They submit it there, and the page reads those issues back through the GitHub API to show live results.
+The **Vote** form asks each member for their name, up to three topics, and the time slots that suit them. Results show live on the page: topic bars, a grid of the most popular times, and who has and hasn't voted. Voting again with the same name replaces the earlier vote. There are also forms for session feedback and for volunteering to present.
 
-- Respondents need a GitHub account, and answers are public. For anonymous feedback, make a Google Form or Microsoft Form and set `"externalUrl"` on that survey. The page then shows an "Open the form" button instead.
-- Only each person's latest answer counts. For per-session feedback, `"dedupeBy": ["session"]` keeps one answer per person per session.
-- To discard a response (spam or a test), close its issue as **Not planned**.
-- Turn a survey off with `"status": "closed"`, or set `"closes": "2027-01-31"`. Hide results with `"showResults": false`.
-- Results load up to 500 recent issues, using GitHub's anonymous API (60 requests per hour per visitor network), which is plenty for a reading group.
+### Connect voting (one time, about 5 minutes)
 
-Question types: `single` (radio buttons), `multi` (checkboxes, optional `max`), `rating` (1 to `scale`, optional `low` and `high` labels), `select` (dropdown), `text`, `textarea`. Set `"options": "sessions:past"` to list past sessions automatically. Mark questions `"required": true` as needed.
+On GitHub Pages, votes are saved in a Google Sheet you own. Nobody needs a GitHub or Google account to vote.
 
-The **Join the group** survey creates an issue an organizer can act on: add the person to `members.json` and to your mailing list or calendar invite, then close the issue.
+1. Create a new Google Sheet (any name).
+2. In the sheet, open **Extensions → Apps Script**. Delete what is there, paste the whole of `scripts/vote-backend.gs`, and click **Save**.
+3. Click **Deploy → New deployment**. Click the gear next to "Select type" and choose **Web app**. Set **Execute as: Me** and **Who has access: Anyone**, then **Deploy**. Allow access when Google asks.
+4. Copy the **Web app URL** (it ends in `/exec`).
+5. On GitHub, open `data/config.json`, click the pencil, paste the URL between the quotes of `"voteUrl": ""`, and commit.
+
+Each answer becomes a row in the sheet's **Responses** tab. To remove a test or spam answer, delete its row. Until the URL is set, the form says voting isn't switched on yet.
+
+### Edit the forms
+
+Forms live in `data/surveys.json`. Question types: `member` (pick your name from `members.json`), `multi` (tick several; `"style": "chips"` for big buttons, `"max"` to limit), `single`, `grid` (`rows` × `columns`, for time slots), `rating`, `select`, `text`, `textarea`. `"options": "sessions:past"` lists past sessions. Close a form with `"status": "closed"` or `"closes": "2027-01-31"`; hide its results from the page with `"showResults": false` (you still see every answer in the sheet).
 
 ## Calendar
 
@@ -126,7 +132,6 @@ node scripts/build-ics.mjs   # optional: builds calendar.ics so the Subscribe bu
 
 Opening `index.html` directly from disk doesn't work, because browsers block it from reading the data files.
 
-Survey submissions need to know the repository. On `*.github.io` it's detected automatically. When the site runs anywhere else, such as a custom domain or a local preview, set `github.owner` and `github.repo` in `config.json`.
 
 ## Files
 
@@ -138,5 +143,6 @@ assets/core.js           time zones and calendar export (shared with the build s
 data/*.json              your content
 papers/                  optional PDFs
 scripts/build-ics.mjs    builds calendar.ics
+scripts/vote-backend.gs  Google Sheet script that stores votes
 .github/workflows/       deploy to GitHub Pages
 ```

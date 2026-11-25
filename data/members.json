@@ -1,1 +1,83 @@
-[]
+[
+  {
+    "id": "aacaas",
+    "name": "Aacaas",
+    "role": "member",
+    "title": "",
+    "interests": [],
+    "github": "",
+    "website": ""
+  },
+  {
+    "id": "harsh",
+    "name": "Harsh",
+    "role": "member",
+    "title": "",
+    "interests": [],
+    "github": "",
+    "website": ""
+  },
+  {
+    "id": "jamil",
+    "name": "Jamil",
+    "role": "member",
+    "title": "",
+    "interests": [],
+    "github": "",
+    "website": ""
+  },
+  {
+    "id": "liming",
+    "name": "Liming",
+    "role": "member",
+    "title": "",
+    "interests": [],
+    "github": "",
+    "website": ""
+  },
+  {
+    "id": "naoya",
+    "name": "Naoya",
+    "role": "member",
+    "title": "",
+    "interests": [],
+    "github": "",
+    "website": ""
+  },
+  {
+    "id": "khan",
+    "name": "Khan",
+    "role": "member",
+    "title": "",
+    "interests": [],
+    "github": "",
+    "website": ""
+  },
+  {
+    "id": "ramesh",
+    "name": "Ramesh",
+    "role": "member",
+    "title": "",
+    "interests": [],
+    "github": "",
+    "website": ""
+  },
+  {
+    "id": "yining",
+    "name": "Yining",
+    "role": "member",
+    "title": "",
+    "interests": [],
+    "github": "",
+    "website": ""
+  },
+  {
+    "id": "yuta",
+    "name": "Yuta",
+    "role": "member",
+    "title": "",
+    "interests": [],
+    "github": "",
+    "website": ""
+  }
+]

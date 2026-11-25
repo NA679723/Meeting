@@ -17,8 +17,7 @@
     papersById: {}, membersById: {}, next: null, now: new Date(),
     track: 'all', cal: null, repo: null, feedUrl: null,
     paperFilter: { q: '', status: 'all', tag: '' },
-    survey: null, issuesPromise: null, formDirty: false,
-    store: { db: null, uid: null, canWrite: null, canEdit: false, docs: null, status: IN_ARTIFACT ? 'loading' : 'off', error: null }
+    survey: null, formDirty: false
   };
 
   // ------------------------------------------------------------------ helpers
@@ -219,83 +218,131 @@
     }
     handleHash();
     window.addEventListener('hashchange', handleHash);
-    initStore();
+    initBackend();
   }
 
-  // ------------------------------------------------------------------ artifact storage (claude.ai)
+  // ------------------------------------------------------------------ answer storage
+  // Answers are kept in one place, depending on where the page runs:
+  //  - on claude.ai (artifact): the page's own database
+  //  - on GitHub Pages: a Google Sheet, through config.voteUrl (see scripts/vote-backend.gs)
+  //  - otherwise: nowhere yet, and the form says so.
 
-  async function initStore() {
-    if (!IN_ARTIFACT) return;
-    const st = S.store;
-    const timer = setTimeout(() => {
-      if (st.status === 'loading') { st.status = 'timeout'; onStoreChange(true); }
-    }, 10000);
-    try {
-      const [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
-      st.db = db;
-      if (user) {
-        try { st.uid = await user.id(); } catch (e) { st.uid = null; }
-        try { st.canWrite = await user.can('data.write'); } catch (e) { st.canWrite = null; }
-        try { st.canEdit = !!(await user.canEdit()); } catch (e) { st.canEdit = false; }
-      }
-      if (!db) { clearTimeout(timer); st.status = 'unavailable'; onStoreChange(true); return; }
-      db.collection('responses').onSnapshot((snap) => {
-        st.docs = snap.docs.map((d) => ({ id: d.id, data: d.data() || {} }));
-        const before = st.status;
-        if (!snap.metadata.fromCache) { clearTimeout(timer); st.status = 'ready'; }
-        else if (st.status === 'loading') st.status = 'cached';
-        onStoreChange(before !== st.status && (before === 'loading' || before === 'timeout'));
-      }, (err) => {
+  const B = { kind: 'none', status: 'off', rows: null, error: null, db: null, canEdit: false, canWrite: null };
+
+  async function initBackend() {
+    if (IN_ARTIFACT) {
+      B.kind = 'artifact';
+      B.status = 'loading';
+      const timer = setTimeout(() => {
+        if (B.status === 'loading') { B.status = 'timeout'; onBackendChange(true); }
+      }, 10000);
+      try {
+        const [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
+        if (user) {
+          try { B.canWrite = await user.can('data.write'); } catch (e) { B.canWrite = null; }
+          try { B.canEdit = !!(await user.canEdit()); } catch (e) { B.canEdit = false; }
+        }
+        if (!db) { clearTimeout(timer); B.status = 'unavailable'; onBackendChange(true); return; }
+        B.db = db;
+        db.collection('votes').onSnapshot((snap) => {
+          B.rows = snap.docs.map((d) => d.data() || {}).filter(validRow);
+          const before = B.status;
+          if (!snap.metadata.fromCache) { clearTimeout(timer); B.status = 'ready'; }
+          else if (B.status === 'loading') B.status = 'cached';
+          onBackendChange(before !== B.status && (before === 'loading' || before === 'timeout'));
+        }, (err) => {
+          clearTimeout(timer);
+          B.status = 'error';
+          B.error = err && err.code;
+          onBackendChange(true);
+        });
+      } catch (e) {
         clearTimeout(timer);
-        st.status = 'error';
-        st.error = err && err.code;
-        onStoreChange(true);
-      });
-    } catch (e) {
-      clearTimeout(timer);
-      st.status = 'unavailable';
-      onStoreChange(true);
+        B.status = 'unavailable';
+        onBackendChange(true);
+      }
+      return;
     }
+    if (/^https:\/\//.test(S.config.voteUrl || '')) {
+      B.kind = 'sheet';
+      B.status = 'loading';
+      await loadSheet();
+      return;
+    }
+    B.kind = 'none';
+    B.status = 'off';
   }
 
-  function onStoreChange(statusChanged) {
+  async function loadSheet() {
+    const before = B.status;
+    try {
+      const url = S.config.voteUrl + (S.config.voteUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
+      const res = await fetch(url);
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const body = await res.json();
+      B.rows = (body.rows || []).filter(validRow);
+      B.status = 'ready';
+    } catch (e) {
+      B.status = 'error';
+      B.error = String(e.message || e);
+    }
+    onBackendChange(before !== B.status);
+  }
+
+  function validRow(r) {
+    return !!r && typeof r.survey === 'string' && typeof r.key === 'string' && !!r.answers && typeof r.answers === 'object';
+  }
+
+  function onBackendChange(statusChanged) {
     if (!S.survey) return;
     if (statusChanged && !S.formDirty) { renderSurveyPanel(); return; }
     const box = $('#survey-panel .results');
     const sv = S.surveys.find((v) => v.id === S.survey);
-    if (box && sv) renderResults(sv, box, false);
+    if (box && sv) renderResults(sv, box);
   }
 
-  function storeRows(sv) {
-    const rows = [];
-    for (const d of S.store.docs || []) {
-      const entries = d.data && d.data.surveys && d.data.surveys[sv.id];
-      if (!entries || typeof entries !== 'object') continue;
-      for (const k of Object.keys(entries)) {
-        const e = entries[k];
-        if (e && typeof e === 'object' && e.answers && typeof e.answers === 'object') {
-          rows.push({ user: d.id, key: k, at: String(e.at || ''), answers: e.answers });
-        }
-      }
+  function latestRows(sv) {
+    const rows = (B.rows || []).filter((r) => r.survey === sv.id)
+      .sort((a, b) => (String(a.at) < String(b.at) ? 1 : -1));
+    const seen = new Set();
+    return rows.filter((r) => {
+      if (seen.has(r.key)) return false;
+      seen.add(r.key);
+      return true;
+    });
+  }
+
+  function answerKey(sv, answers) {
+    const name = String(answers.name || '').trim().toLowerCase();
+    const parts = [name || 'anon-' + Math.random().toString(36).slice(2)];
+    for (const k of sv.dedupeBy || []) parts.push(String(answers[k] == null ? '' : answers[k]));
+    return parts.join(' | ');
+  }
+
+  async function submitAnswers(sv, answers) {
+    const row = { survey: sv.id, key: answerKey(sv, answers), at: new Date().toISOString(), answers };
+    if (B.kind === 'artifact') {
+      await B.db.collection('votes').add(row);
+      return;
     }
-    return rows.sort((a, b) => (a.at < b.at ? 1 : -1));
-  }
-
-  function myPrevious(sv) {
-    if (!S.store.uid) return null;
-    const mine = storeRows(sv).filter((r) => r.user === S.store.uid);
-    return mine.length ? mine[0] : null;
-  }
-
-  async function saveToStore(sv, answers) {
-    const st = S.store;
-    const key = (sv.dedupeBy || []).map((k) => String(answers[k] == null ? '' : answers[k])).join(' | ') || '_';
-    const entry = { answers, at: new Date().toISOString() };
-    const ref = st.db.collection('responses').doc(st.uid);
-    const snap = await ref.get();
-    const body = { surveys: { [sv.id]: { [key]: entry } } };
-    if (snap.exists) await ref.update(body);
-    else await ref.set(body);
+    if (B.kind === 'sheet') {
+      const body = JSON.stringify(row);
+      const opts = { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body };
+      try {
+        const res = await fetch(S.config.voteUrl, opts);
+        const out = await res.json().catch(() => ({ ok: true }));
+        if (out && out.ok === false) throw new Error(out.error || 'The sheet refused the answer.');
+      } catch (e) {
+        if (!(e instanceof TypeError)) throw e;
+        // Some browsers block reading Google's reply; send it without reading the reply.
+        await fetch(S.config.voteUrl, Object.assign({}, opts, { mode: 'no-cors' }));
+      }
+      B.rows = (B.rows || []).concat([row]);
+      onBackendChange(false);
+      setTimeout(loadSheet, 2000);
+      return;
+    }
+    throw new Error('not connected');
   }
 
   function handleHash() {
@@ -366,13 +413,13 @@
     box.replaceChildren();
     const s = S.next;
     if (!s) {
-      const hasTopic = S.surveys.some((v) => v.id === 'next-topic');
+      const hasTopic = S.surveys.some((v) => v.id === 'vote');
       fill(box,
         el('p', { class: 'next-kicker' }, el('span', null, 'Next session')),
         el('h2', { class: 'next-title' }, 'Nothing scheduled yet'),
-        el('p', { class: 'muted' }, 'The next block is being planned. Vote on topics or offer to present something.'),
+        el('p', { class: 'muted' }, 'The next block is being planned. Vote for the topics and meeting times that suit you.'),
         el('div', { class: 'button-row' },
-          hasTopic ? el('a', { class: 'btn btn-primary', href: '#survey-next-topic' }, 'Vote on topics') : null,
+          hasTopic ? el('a', { class: 'btn btn-primary', href: '#survey-vote' }, 'Vote on topics and times') : null,
           el('a', { class: 'btn', href: '#survey-' + ((S.config.participation || {}).presentSurveyId || 'present') }, 'Volunteer to present'))
       );
       return;
@@ -841,7 +888,7 @@
     const actions = $('#paper-actions');
     fill(actions,
       S.config.sharedFolderUrl ? el('a', { class: 'btn', href: S.config.sharedFolderUrl, target: '_blank', rel: 'noopener' }, 'Open shared folder') : null,
-      S.surveys.some((v) => v.id === 'next-topic') ? el('a', { class: 'btn btn-quiet', href: '#survey-next-topic' }, 'Suggest a paper') : null
+      S.surveys.some((v) => v.id === 'present') ? el('a', { class: 'btn btn-quiet', href: '#survey-present' }, 'Propose a paper to present') : null
     );
   }
 
@@ -971,6 +1018,12 @@
   function renderPeople() {
     const orgs = S.members.filter((m) => m.role === 'organizer');
     const rest = S.members.filter((m) => m.role !== 'organizer').sort((a, b) => a.name.localeCompare(b.name));
+    const blocks = $$('#people .people-block');
+    if (!orgs.length && rest.length && blocks.length === 2) {
+      blocks[0].hidden = true;
+      $('h3', blocks[1]).textContent = 'Members';
+      $('p', blocks[1]).textContent = 'Everyone in the reading group.';
+    }
     $('#organizers').replaceChildren(...(orgs.length ? orgs.map((m) => personCard(m, true)) : [el('li', { class: 'muted' }, 'Organizers will be listed here.')]));
     $('#participants').replaceChildren(...(rest.length ? rest.map((m) => personCard(m, false)) : [el('li', { class: 'muted' }, 'Participants will be listed here.')]));
     if (S.config.contactEmail) {
@@ -978,7 +1031,7 @@
     }
   }
 
-  // ------------------------------------------------------------------ surveys
+  // ------------------------------------------------------------------ vote and forms
 
   function surveyClosesDate(sv) { return sv.closes ? Core.parseStart(sv.closes + ' 23:59', TZ()) : null; }
   function surveyClosed(sv) {
@@ -992,6 +1045,7 @@
     return c ? 'Open until ' + fmtDate(c, { day: 'numeric', month: 'short' }) : 'Open';
   }
   function resolveOptions(q) {
+    if (q.type === 'grid') return (q.rows || []).flatMap((r) => (q.columns || []).map((c) => r + ' ' + c));
     if (Array.isArray(q.options)) return q.options;
     if (typeof q.options === 'string' && q.options.startsWith('sessions')) {
       const which = q.options.split(':')[1] || 'all';
@@ -1002,12 +1056,15 @@
     }
     return [];
   }
+  function memberNames() { return S.members.map((m) => m.name).filter(Boolean); }
+  function rememberName(n) { try { localStorage.setItem('rg-name', n); } catch (e) { /* storage unavailable */ } }
+  function recallName() { try { return localStorage.getItem('rg-name') || ''; } catch (e) { return ''; } }
 
   function renderSurveyTabs() {
     const box = $('#survey-tabs');
     if (!S.surveys.length) {
       box.hidden = true;
-      $('#survey-panel').replaceChildren(el('p', { class: 'muted' }, 'No surveys yet. Add one to data/surveys.json.'));
+      $('#survey-panel').replaceChildren(el('p', { class: 'muted' }, 'No forms yet.'));
       return;
     }
     const openOnes = S.surveys.filter((v) => !surveyClosed(v));
@@ -1047,57 +1104,99 @@
 
   function renderSurveyPanel() {
     const sv = S.surveys.find((v) => v.id === S.survey);
+    if (!sv) return;
     const panel = $('#survey-panel');
     panel.setAttribute('aria-labelledby', 'tab-' + sv.id);
     fill(panel,
       el('h3', null, sv.title),
       el('p', { class: 'survey-status' }, surveyStatusText(sv)),
-      sv.description ? el('p', { class: 'survey-desc' }, sv.description) : null
-    );
+      sv.description ? el('p', { class: 'survey-desc' }, sv.description) : null);
+    S.formDirty = false;
     if (sv.externalUrl) {
       panel.append(el('div', { class: 'button-row' },
         el('a', { class: 'btn btn-primary', href: sv.externalUrl, target: '_blank', rel: 'noopener' }, 'Open the form')));
       return;
     }
-    S.formDirty = false;
-    if (surveyClosed(sv)) {
-      panel.append(el('p', { class: 'muted' }, 'This survey is closed. Thanks to everyone who answered.'));
-    } else {
-      panel.append(IN_ARTIFACT ? buildStoreForm(sv) : buildForm(sv));
-    }
-    if (sv.showResults !== false || (IN_ARTIFACT && S.store.canEdit)) {
+    if (surveyClosed(sv)) panel.append(el('p', { class: 'muted' }, 'This is closed. Thanks to everyone who answered.'));
+    else panel.append(buildForm(sv));
+    if (sv.showResults !== false || (B.kind === 'artifact' && B.canEdit)) {
       const res = el('section', { class: 'results', 'aria-label': 'Results' });
       panel.append(res);
-      renderResults(sv, res, false);
+      renderResults(sv, res);
     }
+  }
+
+  // ---- questions
+
+  function choiceList(sv, q, name, opts) {
+    const isMulti = q.type === 'multi';
+    const chips = q.style === 'chips';
+    return el('div', { class: chips ? 'chips' : 'choices' + (q.columns > 1 ? ' cols-' + Math.min(3, q.columns) : '') },
+      opts.map((o) => el('label', { class: chips ? 'chip' : 'choice' },
+        el('input', { type: isMulti ? 'checkbox' : 'radio', name, value: o }),
+        el('span', null, o))));
+  }
+
+  function limitChoices(fs, max) {
+    fs.addEventListener('change', () => {
+      const boxes = $$('input[type=checkbox]', fs);
+      const n = boxes.filter((b) => b.checked).length;
+      boxes.forEach((b) => {
+        b.disabled = !b.checked && n >= max;
+        const wrap = b.closest('.choice, .chip');
+        if (wrap) wrap.classList.toggle('disabled', b.disabled);
+      });
+      const hint = $('.hint', fs);
+      if (hint) hint.textContent = n >= max ? 'That\'s ' + max + '. Untick one to change.' : 'Choose up to ' + max + ' (' + n + ' chosen).';
+    });
   }
 
   function buildQuestion(sv, q) {
     const name = sv.id + '__' + q.id;
     const req = q.required ? el('span', { class: 'req' }, 'Required') : null;
-    const opts = resolveOptions(q);
     const fid = 'f-' + name;
     switch (q.type) {
+      case 'member': {
+        const names = memberNames();
+        if (!names.length) {
+          return el('label', { class: 'q', 'data-q': q.id, for: fid },
+            el('span', { class: 'q-label' }, q.label, req),
+            el('input', { id: fid, type: 'text', name, autocomplete: 'name' }));
+        }
+        const other = el('input', { type: 'text', id: fid + '-other', 'aria-label': 'Your name', placeholder: 'Type your name', hidden: true });
+        const sel = el('select', { id: fid, name, 'data-member': '1' },
+          el('option', { value: '' }, 'Choose your name…'),
+          names.map((n) => el('option', { value: n }, n)),
+          el('option', { value: '__other' }, 'Someone else'));
+        sel.addEventListener('change', () => {
+          other.hidden = sel.value !== '__other';
+          if (!other.hidden) other.focus();
+        });
+        return el('div', { class: 'q', 'data-q': q.id },
+          el('label', { class: 'q-label', for: fid }, q.label, req), sel, other);
+      }
       case 'single':
       case 'multi': {
-        const isMulti = q.type === 'multi';
         const fs = el('fieldset', { class: 'q', 'data-q': q.id },
           el('legend', null, q.label, req),
-          isMulti && q.max ? el('p', { class: 'hint' }, 'Choose up to ' + q.max + '.') : null,
-          el('div', { class: 'choices' + (q.columns > 1 ? ' cols-' + Math.min(3, q.columns) : '') },
-            opts.map((o) => el('label', { class: 'choice' },
-              el('input', { type: isMulti ? 'checkbox' : 'radio', name, value: o }), el('span', null, o)))));
-        if (isMulti && q.max) {
-          fs.addEventListener('change', () => {
-            const boxes = $$('input', fs);
-            const n = boxes.filter((b) => b.checked).length;
-            boxes.forEach((b) => {
-              b.disabled = !b.checked && n >= q.max;
-              b.closest('.choice').classList.toggle('disabled', b.disabled);
-            });
-          });
-        }
+          q.type === 'multi' && q.max ? el('p', { class: 'hint' }, 'Choose up to ' + q.max + '.') : null,
+          choiceList(sv, q, name, resolveOptions(q)));
+        if (q.type === 'multi' && q.max) limitChoices(fs, q.max);
         return fs;
+      }
+      case 'grid': {
+        const table = el('table', { class: 'slot-grid' },
+          el('thead', null, el('tr', null, el('td'), (q.columns || []).map((c) => el('th', { scope: 'col' }, c)))),
+          el('tbody', null, (q.rows || []).map((r) => el('tr', null,
+            el('th', { scope: 'row' }, r),
+            (q.columns || []).map((c) => el('td', null,
+              el('label', { class: 'slot' },
+                el('input', { type: 'checkbox', name, value: r + ' ' + c, 'aria-label': r + ' ' + c }),
+                el('span', { 'aria-hidden': 'true' }))))))));
+        return el('fieldset', { class: 'q', 'data-q': q.id },
+          el('legend', null, q.label, req),
+          el('p', { class: 'hint' }, 'Tap every slot you could make most weeks.'),
+          el('div', { class: 'slot-wrap' }, table));
       }
       case 'rating': {
         const scale = q.scale || 5;
@@ -1112,7 +1211,7 @@
       case 'select':
         return el('label', { class: 'q', 'data-q': q.id, for: fid },
           el('span', { class: 'q-label' }, q.label, req),
-          el('select', { id: fid, name }, el('option', { value: '' }, 'Choose…'), opts.map((o) => el('option', { value: o }, o))));
+          el('select', { id: fid, name }, el('option', { value: '' }, 'Choose…'), resolveOptions(q).map((o) => el('option', { value: o }, o))));
       case 'textarea':
         return el('label', { class: 'q', 'data-q': q.id, for: fid },
           el('span', { class: 'q-label' }, q.label, req),
@@ -1124,20 +1223,26 @@
     }
   }
 
+  function fieldsFor(form, sv, q) {
+    const name = sv.id + '__' + q.id;
+    return $$('[name="' + (window.CSS && CSS.escape ? CSS.escape(name) : name) + '"]', form);
+  }
+
   function collectAnswers(sv, form) {
     const answers = {};
     let firstMissing = null;
     for (const q of sv.questions || []) {
-      const name = sv.id + '__' + q.id;
-      const sel = '[name="' + (window.CSS && CSS.escape ? CSS.escape(name) : name) + '"]';
+      const fields = fieldsFor(form, sv, q);
       let v;
-      if (q.type === 'multi') v = $$(sel + ':checked', form).map((i) => i.value);
+      if (q.type === 'multi' || q.type === 'grid') v = fields.filter((f) => f.checked).map((f) => f.value);
       else if (q.type === 'single' || q.type === 'rating') {
-        const c = $(sel + ':checked', form);
+        const c = fields.find((f) => f.checked);
         v = c ? (q.type === 'rating' ? Number(c.value) : c.value) : '';
+      } else if (q.type === 'member' && fields[0] && fields[0].dataset.member) {
+        v = fields[0].value === '__other' ? ($('#' + fields[0].id + '-other', form) || {}).value || '' : fields[0].value;
+        v = String(v).trim();
       } else {
-        const f = $(sel, form);
-        v = f ? f.value.trim() : '';
+        v = fields[0] ? fields[0].value.trim() : '';
       }
       const empty = Array.isArray(v) ? v.length === 0 : v === '' || v == null;
       if (q.required && empty && !firstMissing) firstMissing = q;
@@ -1146,94 +1251,86 @@
     return { answers, firstMissing };
   }
 
-  function formatAnswer(q, v) {
-    if (Array.isArray(v)) return v.length ? v.map((x) => '- ' + x).join('\n') : '_No response_';
-    if (v === '' || v == null) return '_No response_';
-    if (q.type === 'rating') return v + ' / ' + (q.scale || 5);
-    return String(v);
-  }
-
-  function issueUrl(sv, answers) {
-    let body = '**' + sv.title + '**\n\n';
-    for (const q of sv.questions || []) body += '### ' + q.label + '\n\n' + formatAnswer(q, answers[q.id]) + '\n\n';
-    const data = JSON.stringify({ survey: sv.id, v: 1, answers }).replace(/-->/g, '--\\u003e');
-    body += '<!-- survey-data\n' + data + '\n-->\n';
-    const nameQ = (sv.questions || []).find((q) => q.id === 'name');
-    const title = '[survey:' + sv.id + '] ' + sv.title + (nameQ && answers.name ? ': ' + answers.name : '');
-    const params = new URLSearchParams({ title, body, labels: 'survey' });
-    return 'https://github.com/' + S.repo.owner + '/' + S.repo.repo + '/issues/new?' + params.toString();
-  }
-
-  function buildForm(sv) {
-    const form = el('form', { class: 'survey-form', novalidate: true });
-    form.append(...(sv.questions || []).map((q) => buildQuestion(sv, q)));
-    const msg = el('div', { 'aria-live': 'polite' });
-    const submit = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Continue on GitHub');
-    const foot = el('div', { class: 'form-foot' },
-      el('p', null, 'This opens a prefilled GitHub issue in a new tab. Submit it there to finish. Answers are public and linked to your GitHub account, so you need to be signed in to GitHub.'),
-      msg,
-      el('div', null, submit));
-    if (!S.repo) {
-      submit.disabled = true;
-      foot.insertBefore(el('p', null, 'Answers will be collected once this site is published on GitHub Pages, or once github.owner and github.repo are set in data/config.json.'), msg);
-    }
-    form.append(foot);
-    form.addEventListener('submit', (e) => {
-      e.preventDefault();
-      if (!S.repo) return;
-      const { answers, firstMissing } = collectAnswers(sv, form);
-      if (firstMissing) {
-        msg.replaceChildren(el('p', { class: 'form-error' }, 'Answer "' + firstMissing.label + '" to continue.'));
-        const field = form.querySelector('[data-q="' + firstMissing.id + '"] input, [data-q="' + firstMissing.id + '"] select, [data-q="' + firstMissing.id + '"] textarea');
-        if (field) field.focus();
-        return;
-      }
-      const url = issueUrl(sv, answers);
-      const w = window.open(url, '_blank', 'noopener');
-      msg.replaceChildren(el('p', { class: 'form-done' },
-        'Your answers are ready on GitHub. Submit the issue there to record them. ',
-        w ? null : el('a', { href: url, target: '_blank', rel: 'noopener' }, 'Open it here if a new tab did not appear.')));
-    });
-    return form;
-  }
-
   function prefill(form, sv, answers) {
     for (const q of sv.questions || []) {
       const v = answers[q.id];
-      if (v == null || v === '') continue;
-      const name = sv.id + '__' + q.id;
-      const fields = $$('[name="' + (window.CSS && CSS.escape ? CSS.escape(name) : name) + '"]', form);
+      const fields = fieldsFor(form, sv, q);
+      if (q.type === 'member') continue;
       for (const f of fields) {
-        if (f.type === 'checkbox' || f.type === 'radio') f.checked = [].concat(v).map(String).includes(f.value);
-        else f.value = String(v);
+        if (f.type === 'checkbox' || f.type === 'radio') f.checked = [].concat(v == null ? [] : v).map(String).includes(f.value);
+        else f.value = v == null ? '' : String(v);
       }
       const fs = form.querySelector('[data-q="' + q.id + '"]');
       if (fs && q.type === 'multi') fs.dispatchEvent(new Event('change'));
     }
   }
 
-  function buildStoreForm(sv) {
-    const st = S.store;
+  function setMember(form, sv, nameValue) {
+    const q = (sv.questions || []).find((x) => x.type === 'member');
+    if (!q || !nameValue) return;
+    const sel = fieldsFor(form, sv, q)[0];
+    if (!sel) return;
+    if (sel.dataset.member) {
+      const known = memberNames().includes(nameValue);
+      sel.value = known ? nameValue : '__other';
+      const other = $('#' + sel.id + '-other', form);
+      if (other) { other.hidden = known; if (!known) other.value = nameValue; }
+    } else {
+      sel.value = nameValue;
+    }
+  }
+
+  function blockedReason() {
+    if (B.kind === 'none') return 'Voting isn\'t switched on yet. Organizers: follow "Connect voting" in the README.';
+    if (B.kind === 'artifact') {
+      if (B.status === 'loading') return 'Connecting…';
+      if (B.status === 'unavailable' || B.status === 'error') return 'Answers can\'t be saved in this view. Open the page on claude.ai while signed in.';
+      if (B.status === 'timeout') return 'Saved answers can\'t be reached yet. Check your connection.';
+      if (B.canWrite === false) return 'You can see the results but not vote. Ask the page owner for Contributor access.';
+    }
+    return null;
+  }
+
+  function buildForm(sv) {
     const form = el('form', { class: 'survey-form', novalidate: true });
     form.append(...(sv.questions || []).map((q) => buildQuestion(sv, q)));
     const msg = el('div', { 'aria-live': 'polite' });
-    const prev = st.status === 'ready' || st.status === 'cached' ? myPrevious(sv) : null;
-    const submit = el('button', { class: 'btn btn-primary', type: 'submit' }, prev ? 'Update my answers' : 'Submit answers');
-    let note = 'Answers are saved with this page. Everyone who can open it sees the results.';
-    let blocked = null;
-    if (st.status === 'loading') blocked = 'Connecting to saved answers…';
-    else if (st.status === 'unavailable' || st.status === 'error' || !st.uid) blocked = 'Answers can\'t be saved in this view. Open the page on claude.ai while signed in.';
-    else if (st.status === 'timeout') blocked = 'Saved answers can\'t be reached yet. Check your connection.';
-    else if (st.canWrite === false) blocked = 'You can see the results but not answer. Ask the page owner for Contributor access.';
-    if (prev && !blocked) {
-      note = 'You answered on ' + fmtDate(new Date(prev.at), { day: 'numeric', month: 'short' }) + '. Submitting again replaces that answer. ' + note;
-      prefill(form, sv, prev.answers);
-    }
-    const foot = el('div', { class: 'form-foot' }, el('p', null, note), blocked ? el('p', { class: 'form-error' }, blocked) : null, msg, el('div', null, submit));
+    const prevNote = el('p', { class: 'prev-note' });
+    prevNote.hidden = true;
+    const submit = el('button', { class: 'btn btn-primary btn-big', type: 'submit' }, sv.submitLabel || 'Submit');
+    const blocked = blockedReason();
     if (blocked) submit.disabled = true;
-    form.append(foot);
+    form.append(el('div', { class: 'form-foot' },
+      prevNote,
+      blocked ? el('p', { class: 'form-error' }, blocked) : null,
+      el('div', null, submit),
+      msg,
+      el('p', null, 'Answering again with the same name replaces your earlier answer.')));
+
+    const memberQ = (sv.questions || []).find((q) => q.type === 'member' || q.id === 'name');
+    const showPrevious = () => {
+      if (!memberQ || (sv.dedupeBy || []).length) return;
+      const { answers } = collectAnswers(sv, form);
+      const name = String(answers[memberQ.id] || '').trim().toLowerCase();
+      const prev = name ? latestRows(sv).find((r) => r.key === name) : null;
+      prevNote.hidden = !prev;
+      if (prev) {
+        prevNote.textContent = 'You answered on ' + fmtDate(new Date(prev.at), { day: 'numeric', month: 'short' }) + '. Your earlier choices are filled in below.';
+        prefill(form, sv, prev.answers);
+      }
+    };
+    form.addEventListener('change', (e) => {
+      S.formDirty = true;
+      if (memberQ && e.target && e.target.name === sv.id + '__' + memberQ.id) {
+        if (e.target.value && e.target.value !== '__other') rememberName(e.target.value);
+        showPrevious();
+      }
+    });
     form.addEventListener('input', () => { S.formDirty = true; });
-    form.addEventListener('change', () => { S.formDirty = true; });
+
+    const saved = recallName();
+    if (saved) { setMember(form, sv, saved); showPrevious(); }
+
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
       if (submit.disabled) return;
@@ -1245,68 +1342,27 @@
         return;
       }
       submit.disabled = true;
+      const label = submit.textContent;
       submit.textContent = 'Saving…';
       try {
-        await saveToStore(sv, answers);
+        await submitAnswers(sv, answers);
+        if (memberQ && answers[memberQ.id]) rememberName(answers[memberQ.id]);
         S.formDirty = false;
-        msg.replaceChildren(el('p', { class: 'form-done' }, 'Saved. Thanks for answering.'));
-        submit.textContent = 'Update my answers';
+        msg.replaceChildren(el('p', { class: 'form-done' }, 'Thanks, ' + (answers.name || 'your answer') + (answers.name ? '. Your answer is saved.' : ' is saved.')));
       } catch (err) {
         const code = err && err.code;
-        const text = code === 'invalid_argument' ? 'Your access to this page doesn\'t allow answering. Ask the owner for Contributor access.'
+        const text = code === 'invalid_argument' ? 'Your access to this page doesn\'t allow voting. Ask the owner for Contributor access.'
           : code === 'quota_exceeded' ? 'This page has run out of storage for answers. Let the organizers know.'
-            : 'Couldn\'t save your answers. Try again in a moment.';
+            : 'Couldn\'t save your answer. Check your connection and try again.';
         msg.replaceChildren(el('p', { class: 'form-error' }, text));
-        submit.textContent = 'Submit answers';
       }
+      submit.textContent = label;
       submit.disabled = false;
     });
     return form;
   }
 
-  async function loadIssues(force) {
-    if (S.issuesPromise && !force) return S.issuesPromise;
-    const { owner, repo } = S.repo;
-    S.issuesPromise = (async () => {
-      const all = [];
-      for (let page = 1; page <= 5; page++) {
-        const res = await fetch('https://api.github.com/repos/' + owner + '/' + repo + '/issues?state=all&per_page=100&page=' + page,
-          { headers: { Accept: 'application/vnd.github+json' } });
-        if (res.status === 403 || res.status === 429) throw new Error('rate');
-        if (res.status === 404) throw new Error('notfound');
-        if (!res.ok) throw new Error('HTTP ' + res.status);
-        const batch = await res.json();
-        all.push(...batch);
-        if (batch.length < 100) break;
-      }
-      return all;
-    })();
-    S.issuesPromise.catch(() => { S.issuesPromise = null; });
-    return S.issuesPromise;
-  }
-
-  function responsesFor(sv, issues) {
-    const prefix = '[survey:' + sv.id + ']';
-    const rows = [];
-    for (const i of issues) {
-      if (i.pull_request || !String(i.title || '').startsWith(prefix)) continue;
-      if (i.state === 'closed' && i.state_reason === 'not_planned') continue;
-      const m = String(i.body || '').match(/<!--\s*survey-data\s*([\s\S]*?)-->/);
-      if (!m) continue;
-      let data;
-      try { data = JSON.parse(m[1]); } catch (e) { continue; }
-      if (!data || data.survey !== sv.id || typeof data.answers !== 'object') continue;
-      rows.push({ user: (i.user && i.user.login) || '?', at: i.created_at, answers: data.answers });
-    }
-    rows.sort((a, b) => (a.at < b.at ? 1 : -1));
-    const seen = new Set();
-    return rows.filter((r) => {
-      const key = [r.user].concat((sv.dedupeBy || []).map((k) => r.answers[k])).join('|');
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }
+  // ---- results
 
   function barRow(label, count, denom, maxCount) {
     const pct = denom ? Math.round((count / denom) * 100) : 0;
@@ -1318,60 +1374,64 @@
       el('span', { class: 'bar-count' }, count + (denom ? ' (' + pct + '%)' : '')));
   }
 
-  async function renderResults(sv, box, force) {
-    if (IN_ARTIFACT) return renderStoreResults(sv, box);
-    const head = el('div', { class: 'results-head' }, el('h4', null, 'Results'));
-    box.replaceChildren(head);
-    if (!S.repo) {
-      box.append(el('p', { class: 'muted small' }, 'Results appear here once the site is connected to a GitHub repository.'));
-      return;
-    }
-    const status = el('p', { class: 'muted small' }, 'Loading responses from GitHub…');
-    box.append(status);
-    let rows;
-    try {
-      rows = responsesFor(sv, await loadIssues(force));
-    } catch (err) {
-      const msg = err.message === 'rate'
-        ? 'GitHub allows 60 anonymous requests an hour per network, and that limit has been reached. Try again later.'
-        : err.message === 'notfound'
-          ? 'Could not find ' + S.repo.owner + '/' + S.repo.repo + '. Results need a public repository with issues turned on.'
-          : 'Could not load responses (' + err.message + ').';
-      status.textContent = msg;
-      return;
-    }
-    if (S.survey !== sv.id || !box.isConnected) return;
-    const allLink = 'https://github.com/' + S.repo.owner + '/' + S.repo.repo + '/issues?q=' + encodeURIComponent('is:issue in:title "[survey:' + sv.id + ']"');
-    head.append(el('span', { class: 'muted small' },
-      plural(rows.length, 'response') + (rows.length ? ', latest per person' : ''), ' ',
-      el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => renderResults(sv, box, true) }, 'Refresh')));
-    status.remove();
-    renderSummary(sv, box, rows);
-    box.append(el('p', { class: 'small', style: 'margin-top:18px' }, el('a', { href: allLink, target: '_blank', rel: 'noopener' }, 'See every response on GitHub')));
+  function gridResult(q, answered) {
+    const counts = new Map();
+    for (const v of answered) for (const x of [].concat(v)) counts.set(x, (counts.get(x) || 0) + 1);
+    const max = Math.max(0, ...counts.values());
+    const best = max ? resolveOptions(q).filter((k) => counts.get(k) === max) : [];
+    const n = answered.length;
+    const table = el('table', { class: 'slot-grid heat' },
+      el('thead', null, el('tr', null, el('td'), (q.columns || []).map((c) => el('th', { scope: 'col' }, c)))),
+      el('tbody', null, (q.rows || []).map((r) => el('tr', null,
+        el('th', { scope: 'row' }, r),
+        (q.columns || []).map((c) => {
+          const k = r + ' ' + c;
+          const cnt = counts.get(k) || 0;
+          const pct = max ? Math.round(12 + 78 * (cnt / max)) : 0;
+          const style = cnt ? 'background:color-mix(in srgb, var(--accent) ' + pct + '%, var(--surface));color:' + (pct > 55 ? 'var(--on-accent)' : 'var(--ink)') : '';
+          return el('td', null, el('span', {
+            class: 'heat-cell' + (cnt && cnt === max ? ' best' : ''), style,
+            title: k + ': ' + cnt + ' of ' + plural(n, 'voter')
+          }, String(cnt)));
+        })))));
+    return [
+      best.length ? el('p', { class: 'best-line' }, el('strong', null, best.length > 1 ? 'Most popular (tied): ' : 'Most popular: '), best.join(', ') + ' (' + max + ' of ' + n + ')') : null,
+      el('div', { class: 'slot-wrap' }, table)
+    ];
   }
 
-  function renderStoreResults(sv, box) {
-    const st = S.store;
+  function whoAnswered(q, rows) {
+    const names = rows.map((r) => String(r.answers[q.id] || '').trim()).filter(Boolean);
+    const lower = new Set(names.map((x) => x.toLowerCase()));
+    const missing = memberNames().filter((m) => !lower.has(m.toLowerCase()));
+    return el('div', { class: 'who' },
+      el('p', null, el('strong', null, 'Answered (' + names.length + '): '), names.length ? names.sort((a, b) => a.localeCompare(b)).join(', ') : 'nobody yet'),
+      missing.length ? el('p', { class: 'muted' }, el('strong', null, 'Not yet (' + missing.length + '): '), missing.join(', ')) : null);
+  }
+
+  function renderResults(sv, box) {
     const editorsOnly = sv.showResults === false;
     const head = el('div', { class: 'results-head' }, el('h4', null, editorsOnly ? 'Responses' : 'Results'));
     box.replaceChildren(head);
-    if (st.status === 'loading' && !st.docs) { box.append(el('p', { class: 'muted small' }, 'Loading responses…')); return; }
-    if (st.status === 'unavailable' || (st.status === 'error' && !st.docs)) {
-      box.append(el('p', { class: 'muted small' }, 'Results show here when the page is opened on claude.ai while signed in.'));
+    if (B.kind === 'none') { box.append(el('p', { class: 'muted small' }, 'Results appear here once voting is switched on.')); return; }
+    if (!B.rows) {
+      const text = B.status === 'timeout' ? 'Results can\'t be reached yet. Check your connection.'
+        : B.status === 'error' || B.status === 'unavailable' ? (B.kind === 'sheet' ? 'Couldn\'t load results from the Google Sheet. Check the voteUrl in data/config.json.' : 'Results show here when the page is opened on claude.ai while signed in.')
+          : 'Loading results…';
+      box.append(el('p', { class: 'muted small' }, text));
       return;
     }
-    if (st.status === 'timeout' && !st.docs) { box.append(el('p', { class: 'muted small' }, 'Responses can\'t be reached yet. Check your connection.')); return; }
-    const all = storeRows(sv);
-    const seen = new Set();
-    const rows = all.filter((r) => { const k = r.user + '|' + r.key; if (seen.has(k)) return false; seen.add(k); return true; });
-    head.append(el('span', { class: 'muted small' }, plural(rows.length, 'response') + (editorsOnly ? ', shown to editors only' : rows.length ? ', updating live' : '')));
-    if (st.status === 'timeout' || st.status === 'cached') box.append(el('p', { class: 'muted small' }, 'These may be out of date while the connection catches up.'));
+    const rows = latestRows(sv);
+    head.append(el('span', { class: 'muted small' },
+      plural(rows.length, 'answer') + (editorsOnly ? ', shown to editors only' : ''),
+      B.kind === 'sheet' ? [' ', el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => { B.status = 'loading'; loadSheet(); } }, 'Refresh')] : (rows.length ? ', updating live' : '')));
+    if (B.status === 'timeout' || B.status === 'cached') box.append(el('p', { class: 'muted small' }, 'These may be out of date while the connection catches up.'));
     if (editorsOnly) renderResponseList(sv, box, rows);
     else renderSummary(sv, box, rows);
   }
 
   function renderResponseList(sv, box, rows) {
-    if (!rows.length) { box.append(el('p', { class: 'muted' }, 'No responses yet.')); return; }
+    if (!rows.length) { box.append(el('p', { class: 'muted' }, 'No answers yet.')); return; }
     box.append(el('ul', { class: 'response-list' }, rows.map((r) => el('li', null,
       el('p', { class: 'response-date' }, r.at ? fmtDate(new Date(r.at), { day: 'numeric', month: 'short', year: 'numeric' }) : ''),
       el('dl', { class: 'facts' }, (sv.questions || []).map((q) => {
@@ -1383,13 +1443,17 @@
 
   function renderSummary(sv, box, rows) {
     if (!rows.length) {
-      box.append(el('p', { class: 'muted' }, 'No responses yet.'));
+      box.append(el('p', { class: 'muted' }, 'No answers yet. Be the first.'));
       return;
     }
     for (const q of sv.questions || []) {
       const answered = rows.map((r) => r.answers[q.id]).filter((v) => (Array.isArray(v) ? v.length : v !== '' && v != null));
       const block = el('div', { class: 'results-q' }, el('h5', null, q.label));
-      if (q.type === 'single' || q.type === 'multi' || q.type === 'select') {
+      if (q.type === 'member' || q.id === 'name') {
+        block.replaceChildren(whoAnswered(q, rows));
+      } else if (q.type === 'grid') {
+        block.append(...gridResult(q, answered).filter(Boolean));
+      } else if (q.type === 'single' || q.type === 'multi' || q.type === 'select') {
         const counts = new Map(resolveOptions(q).map((o) => [o, 0]));
         for (const v of answered) for (const x of [].concat(v)) counts.set(x, (counts.get(x) || 0) + 1);
         let entries = Array.from(counts.entries());
@@ -1399,17 +1463,16 @@
         block.append(el('ul', { class: 'bars' }, entries.map(([label, c]) => barRow(label, c, answered.length, max))));
       } else if (q.type === 'rating') {
         const scale = q.scale || 5;
-        const nums = answered.map(Number).filter((n) => n >= 1 && n <= scale);
+        const nums = answered.map(Number).filter((x) => x >= 1 && x <= scale);
         const mean = nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
-        const dist = Array.from({ length: scale }, (_, i) => nums.filter((n) => n === i + 1).length);
+        const dist = Array.from({ length: scale }, (_, i) => nums.filter((x) => x === i + 1).length);
         const max = Math.max(1, ...dist);
         block.append(
           el('p', { class: 'mean' }, el('strong', null, mean.toFixed(1)), 'average from ' + plural(nums.length, 'rating') + ' (1 to ' + scale + ')'),
           el('ul', { class: 'bars' }, dist.map((c, i) => barRow(String(i + 1) + (i === 0 && q.low ? ' ' + q.low : i === scale - 1 && q.high ? ' ' + q.high : ''), c, nums.length, max))));
       } else {
         if (!answered.length) continue;
-        block.append(el('ul', { class: 'text-answers' }, answered.slice(0, 5).map((t) => el('li', null, String(t)))));
-        if (answered.length > 5) block.append(el('p', { class: 'muted small' }, plural(answered.length - 5, 'more answer') + ' on GitHub.'));
+        block.append(el('ul', { class: 'text-answers' }, answered.slice(0, 8).map((t) => el('li', null, String(t)))));
       }
       box.append(block);
     }

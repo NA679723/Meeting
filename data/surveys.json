@@ -1,19 +1,26 @@
 [
   {
-    "id": "next-topic",
-    "title": "Vote for next term's topics",
-    "description": "Pick up to three areas for the spring block. Organizers will build the reading list from the top choices.",
+    "id": "vote",
+    "title": "Vote: topics and meeting time",
+    "description": "Choose your name, tap up to three topics, and tap every time slot that works for you. Then press Submit vote.",
     "status": "open",
     "closes": "2026-12-20",
     "showResults": true,
-    "externalUrl": "",
+    "submitLabel": "Submit vote",
     "questions": [
+      {
+        "id": "name",
+        "type": "member",
+        "required": true,
+        "label": "Your name"
+      },
       {
         "id": "topics",
         "type": "multi",
+        "style": "chips",
         "max": 3,
         "required": true,
-        "label": "Which areas should we read next?",
+        "label": "Topics you want to read",
         "options": [
           "Basics of causal inference",
           "Causal abstraction",
@@ -25,25 +32,42 @@
         ]
       },
       {
-        "id": "paper",
-        "type": "text",
-        "label": "A specific paper you'd like on the list (optional)",
-        "placeholder": "Title or arXiv link"
+        "id": "times",
+        "type": "grid",
+        "required": true,
+        "label": "Times that work for you (GST, UTC+4)",
+        "rows": [
+          "Monday",
+          "Tuesday",
+          "Wednesday",
+          "Thursday",
+          "Friday"
+        ],
+        "columns": [
+          "2–3 PM",
+          "4–5 PM"
+        ]
       }
     ]
   },
   {
     "id": "feedback",
     "title": "Session feedback",
-    "description": "Two minutes after a session helps the next presenter. Pick the session you attended.",
+    "description": "Two minutes after a session helps the next presenter.",
     "status": "open",
     "closes": "",
     "showResults": true,
-    "externalUrl": "",
+    "submitLabel": "Send feedback",
     "dedupeBy": [
       "session"
     ],
     "questions": [
+      {
+        "id": "name",
+        "type": "member",
+        "required": true,
+        "label": "Your name"
+      },
       {
         "id": "session",
         "type": "select",
@@ -61,16 +85,6 @@
         "high": "Very useful"
       },
       {
-        "id": "pace",
-        "type": "single",
-        "label": "Pace",
-        "options": [
-          "Too slow",
-          "About right",
-          "Too fast"
-        ]
-      },
-      {
         "id": "change",
         "type": "textarea",
         "label": "One thing to keep or change"
@@ -78,54 +92,20 @@
     ]
   },
   {
-    "id": "availability",
-    "title": "Availability for next term",
-    "description": "Tick every slot you could make most weeks. Times are GST (UTC+4).",
-    "status": "open",
-    "closes": "2026-12-20",
-    "showResults": true,
-    "externalUrl": "",
-    "questions": [
-      {
-        "id": "slots",
-        "type": "multi",
-        "required": true,
-        "label": "Which slots work for you?",
-        "options": [
-          "Monday 2–3 PM",
-          "Monday 4–5 PM",
-          "Tuesday 2–3 PM",
-          "Tuesday 4–5 PM",
-          "Wednesday 2–3 PM",
-          "Wednesday 4–5 PM",
-          "Thursday 2–3 PM",
-          "Thursday 4–5 PM",
-          "Friday 2–3 PM",
-          "Friday 4–5 PM"
-        ],
-        "columns": 2
-      },
-      {
-        "id": "frequency",
-        "type": "single",
-        "label": "How often should we meet?",
-        "options": [
-          "Weekly",
-          "Every other week",
-          "Monthly"
-        ]
-      }
-    ]
-  },
-  {
     "id": "present",
     "title": "Volunteer to present",
-    "description": "Propose a paper you'd like to lead. It doesn't need to be your own research; explaining something you want to understand better is the point.",
+    "description": "Propose a paper you'd like to lead. Explaining something you want to understand better is the point.",
     "status": "open",
     "closes": "",
     "showResults": false,
-    "externalUrl": "",
+    "submitLabel": "Send proposal",
     "questions": [
+      {
+        "id": "name",
+        "type": "member",
+        "required": true,
+        "label": "Your name"
+      },
       {
         "id": "paper",
         "type": "text",
@@ -134,65 +114,10 @@
         "placeholder": "Title, arXiv link or DOI"
       },
       {
-        "id": "track",
-        "type": "single",
-        "required": true,
-        "label": "Track",
-        "options": [
-          "Theory",
-          "Practice",
-          "Not sure"
-        ]
-      },
-      {
         "id": "when",
         "type": "text",
         "label": "Dates that suit you",
-        "placeholder": "e.g. any Wednesday in February"
-      },
-      {
-        "id": "plan",
-        "type": "textarea",
-        "label": "What would you cover?"
-      }
-    ]
-  },
-  {
-    "id": "join",
-    "title": "Join the group",
-    "description": "Introduce yourself so organizers can add you to the participant list and the calendar invite. Everything here is public, so leave out anything you'd rather keep private.",
-    "status": "open",
-    "closes": "",
-    "showResults": false,
-    "externalUrl": "",
-    "questions": [
-      {
-        "id": "name",
-        "type": "text",
-        "required": true,
-        "label": "Name"
-      },
-      {
-        "id": "affiliation",
-        "type": "text",
-        "label": "Affiliation and role",
-        "placeholder": "e.g. PhD student, Machine Learning"
-      },
-      {
-        "id": "mode",
-        "type": "single",
-        "required": true,
-        "label": "How do you want to take part?",
-        "options": [
-          "Attend and listen",
-          "Attend and present sometimes"
-        ]
-      },
-      {
-        "id": "interests",
-        "type": "text",
-        "label": "Research interests",
-        "placeholder": "Comma-separated"
+        "placeholder": "e.g. any Wednesday in January"
       }
     ]
   }
