@@ -97,7 +97,7 @@
     "description": "Propose a paper you'd like to lead. Explaining something you want to understand better is the point.",
     "status": "open",
     "closes": "",
-    "showResults": false,
+    "showResults": true,
     "submitLabel": "Send proposal",
     "questions": [
       {
@@ -119,6 +119,9 @@
         "label": "Dates that suit you",
         "placeholder": "e.g. any Wednesday in January"
       }
-    ]
+    ],
+    "resultsStyle": "list",
+    "resultsTitle": "Proposals",
+    "emptyText": "No proposals yet."
   }
 ]

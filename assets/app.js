@@ -229,8 +229,23 @@
 
   const B = { kind: 'none', status: 'off', rows: null, error: null, db: null, canEdit: false, canWrite: null };
 
+  function hasClaude() { return !!(window.claude && typeof window.claude.use === 'function'); }
+  async function waitForClaude(ms) {
+    const start = Date.now();
+    while (!hasClaude() && Date.now() - start < ms) await new Promise((r) => setTimeout(r, 100));
+    return hasClaude();
+  }
+
   async function initBackend() {
-    if (IN_ARTIFACT) {
+    let inArtifact = IN_ARTIFACT || hasClaude();
+    const knownHost = location.protocol === 'file:' || /(^|\.)github\.io$|^localhost$|^127\.0\.0\.1$/.test(location.hostname);
+    if (!inArtifact && !knownHost && !/^https:\/\//.test(S.config.voteUrl || '')) {
+      B.kind = 'pending';
+      B.status = 'loading';
+      onBackendChange(true);
+      inArtifact = await waitForClaude(4000);
+    }
+    if (inArtifact) {
       B.kind = 'artifact';
       B.status = 'loading';
       const timer = setTimeout(() => {
@@ -269,8 +284,10 @@
       await loadSheet();
       return;
     }
+    const wasPending = B.kind === 'pending';
     B.kind = 'none';
     B.status = 'off';
+    if (wasPending) onBackendChange(true);
   }
 
   async function loadSheet() {
@@ -1281,7 +1298,8 @@
   }
 
   function blockedReason() {
-    if (B.kind === 'none') return 'Voting isn\'t switched on yet. Organizers: follow "Connect voting" in the README.';
+    if (B.kind === 'pending') return 'Connecting…';
+    if (B.kind === 'none') return 'Answers can\'t be saved yet. Organizers: follow "Connect voting" in the README.';
     if (B.kind === 'artifact') {
       if (B.status === 'loading') return 'Connecting…';
       if (B.status === 'unavailable' || B.status === 'error') return 'Answers can\'t be saved in this view. Open the page on claude.ai while signed in.';
@@ -1411,9 +1429,10 @@
 
   function renderResults(sv, box) {
     const editorsOnly = sv.showResults === false;
-    const head = el('div', { class: 'results-head' }, el('h4', null, editorsOnly ? 'Responses' : 'Results'));
+    const head = el('div', { class: 'results-head' }, el('h4', null, sv.resultsTitle || (editorsOnly ? 'Responses' : 'Results')));
     box.replaceChildren(head);
     if (B.kind === 'none') { box.append(el('p', { class: 'muted small' }, 'Results appear here once voting is switched on.')); return; }
+    if (B.kind === 'pending') { box.append(el('p', { class: 'muted small' }, 'Loading results…')); return; }
     if (!B.rows) {
       const text = B.status === 'timeout' ? 'Results can\'t be reached yet. Check your connection.'
         : B.status === 'error' || B.status === 'unavailable' ? (B.kind === 'sheet' ? 'Couldn\'t load results from the Google Sheet. Check the voteUrl in data/config.json.' : 'Results show here when the page is opened on claude.ai while signed in.')
@@ -1426,12 +1445,12 @@
       plural(rows.length, 'answer') + (editorsOnly ? ', shown to editors only' : ''),
       B.kind === 'sheet' ? [' ', el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => { B.status = 'loading'; loadSheet(); } }, 'Refresh')] : (rows.length ? ', updating live' : '')));
     if (B.status === 'timeout' || B.status === 'cached') box.append(el('p', { class: 'muted small' }, 'These may be out of date while the connection catches up.'));
-    if (editorsOnly) renderResponseList(sv, box, rows);
+    if (editorsOnly || sv.resultsStyle === 'list') renderResponseList(sv, box, rows);
     else renderSummary(sv, box, rows);
   }
 
   function renderResponseList(sv, box, rows) {
-    if (!rows.length) { box.append(el('p', { class: 'muted' }, 'No answers yet.')); return; }
+    if (!rows.length) { box.append(el('p', { class: 'muted' }, sv.emptyText || 'No answers yet.')); return; }
     box.append(el('ul', { class: 'response-list' }, rows.map((r) => el('li', null,
       el('p', { class: 'response-date' }, r.at ? fmtDate(new Date(r.at), { day: 'numeric', month: 'short', year: 'numeric' }) : ''),
       el('dl', { class: 'facts' }, (sv.questions || []).map((q) => {
