@@ -1,0 +1,55 @@
+{
+  "groupName": "Causal Inference Reading Group",
+  "affiliation": "",
+  "purpose": "We read papers on causal inference together: how effects are identified, how they are estimated, and where the assumptions break. Sessions are expository and discussion-driven; presenters do not need to be working on the topic.",
+  "regularTime": "",
+  "timezone": "Asia/Dubai",
+  "defaultDurationMinutes": 60,
+  "defaultLocation": "",
+  "meetingLink": "",
+  "github": {
+    "owner": "",
+    "repo": ""
+  },
+  "labUrl": "",
+  "labName": "Lab",
+  "contactEmail": "",
+  "sharedFolderUrl": "",
+  "tracks": [
+    {
+      "id": "theory",
+      "name": "Theory",
+      "description": "Identification arguments, proofs and the assumptions behind them."
+    },
+    {
+      "id": "practice",
+      "name": "Practice",
+      "description": "Estimators in use: code walkthroughs, replications and applied papers."
+    }
+  ],
+  "scope": {
+    "intro": "Topics are chosen by members, so this is a map rather than a fixed syllabus. Anything connected to causal reasoning can be proposed.",
+    "topics": [
+      "Basics of causal inference",
+      "Causal abstraction",
+      "Counterfactual reasoning",
+      "Causal mediation",
+      "Causal representation learning",
+      "Latent action",
+      "Causal identification and bounding (theory)"
+    ]
+  },
+  "format": {
+    "steps": [
+      "The presenter sets up the problem: which causal question is being asked, and what data would answer it.",
+      "We work through the identifying assumptions and the key argument or estimator, slowing down at the steps that matter.",
+      "The last 20 minutes are open discussion: limitations, links to earlier sessions, and what to read next."
+    ],
+    "note": "Practice sessions can add a code walkthrough, a replication or a small simulation. A session can cover a single theorem or section rather than a whole paper."
+  },
+  "participation": {
+    "intro": "Sessions are open to anyone, including people outside the group and prospective students. Come to listen and ask questions, or volunteer to present something you want to understand better.",
+    "presentSurveyId": "present",
+    "joinSurveyId": "join"
+  }
+}

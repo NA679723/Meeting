@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Causal Inference Reading Group</title>
+  <meta name="description" content="Schedule, shared papers, members and surveys for the causal inference reading group.">
+  <meta name="theme-color" content="#16233a">
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=STIX+Two+Text:ital,wght@0,400;0,500;0,600;1,400;1,500&display=swap">
+  <link rel="stylesheet" href="assets/style.css">
+  <script src="assets/core.js" defer></script>
+  <script src="assets/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to main content</a>
+
+  <header class="site-header">
+    <div class="wrap header-inner">
+      <a class="brand" href="#top">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <g stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round">
+            <path d="M14 10.5 9.8 19"/><path d="M18 10.5 22.2 19"/><path d="M12.5 23h7"/>
+          </g>
+          <circle cx="16" cy="8" r="3.4" fill="currentColor"/>
+          <circle cx="8.5" cy="23" r="3.4" fill="currentColor"/>
+          <circle cx="23.5" cy="23" r="3.4" class="brand-y"/>
+        </svg>
+        <span data-bind="groupName">Causal Inference Reading Group</span>
+      </a>
+      <nav class="site-nav" aria-label="Sections">
+        <ul>
+          <li><a href="#about">About</a></li>
+          <li><a href="#schedule">Schedule</a></li>
+          <li><a href="#papers">Papers</a></li>
+          <li><a href="#people">People</a></li>
+          <li><a href="#surveys">Surveys</a></li>
+          <li class="nav-external" hidden><a id="nav-lab" href="#" target="_blank" rel="noopener">Lab</a></li>
+        </ul>
+      </nav>
+    </div>
+  </header>
+
+  <div id="load-error" class="load-error wrap" role="alert" hidden></div>
+
+  <main id="main">
+    <section class="hero" id="top" aria-labelledby="hero-title">
+      <div class="wrap">
+        <div class="hero-head">
+          <h1 id="hero-title" data-bind="groupName">Causal Inference Reading Group</h1>
+          <div class="hero-sub">
+            <p class="purpose" data-bind="purpose"></p>
+            <p class="regular"><span class="regular-label">Meets</span> <span data-bind="regularTime"></span></p>
+          </div>
+        </div>
+
+        <div class="hero-grid">
+          <article class="next" id="next-session" aria-live="polite">
+            <p class="muted">Loading the schedule…</p>
+          </article>
+
+          <figure class="roadmap">
+            <div class="roadmap-head">
+              <h2 class="roadmap-title">Reading roadmap</h2>
+              <p class="roadmap-note">Arrows run from a session to the ones that build on it. Select a session to see its details.</p>
+            </div>
+            <div class="roadmap-canvas" id="roadmap"></div>
+            <p class="roadmap-hint" id="roadmap-hint" hidden>Scroll sideways to see the whole roadmap.</p>
+            <figcaption class="roadmap-legend" id="roadmap-legend"></figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="about" aria-labelledby="about-title">
+      <div class="wrap">
+        <h2 class="section-title" id="about-title">About the group</h2>
+        <div class="about-grid">
+          <div class="about-col">
+            <h3>What we read</h3>
+            <p id="scope-intro"></p>
+            <ul class="topic-list" id="scope-topics"></ul>
+          </div>
+          <div class="about-col">
+            <h3>How a session works</h3>
+            <ol class="format-list" id="format"></ol>
+            <p class="format-note" id="format-note" hidden></p>
+          </div>
+          <div class="about-col">
+            <h3>Taking part</h3>
+            <p id="participation"></p>
+            <dl class="tracks" id="tracks"></dl>
+            <div class="button-row" id="participate-actions"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="schedule" aria-labelledby="schedule-title">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 class="section-title" id="schedule-title">Schedule</h2>
+          <div class="section-actions" id="calendar-actions"></div>
+        </div>
+        <div class="filter-row">
+          <div class="segmented" id="track-filter" role="group" aria-label="Filter by track"></div>
+          <p class="muted small" id="tz-note"></p>
+        </div>
+        <div class="schedule-grid">
+          <div class="calendar" id="calendar"></div>
+          <div class="agenda" id="agenda"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="papers" aria-labelledby="papers-title">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 class="section-title" id="papers-title">Shared papers</h2>
+          <div class="section-actions" id="paper-actions"></div>
+        </div>
+        <div class="paper-toolbar">
+          <label class="search">
+            <span class="visually-hidden">Search papers</span>
+            <input type="search" id="paper-search" placeholder="Search title, author or tag" autocomplete="off">
+          </label>
+          <div class="segmented" id="paper-status" role="group" aria-label="Filter by status"></div>
+          <label class="select">
+            <span class="visually-hidden">Filter by tag</span>
+            <select id="paper-tag"></select>
+          </label>
+        </div>
+        <p class="muted small" id="paper-count" aria-live="polite"></p>
+        <ol class="paper-list" id="paper-list"></ol>
+      </div>
+    </section>
+
+    <section class="section" id="people" aria-labelledby="people-title">
+      <div class="wrap">
+        <h2 class="section-title" id="people-title">People</h2>
+        <div class="people-block">
+          <div class="people-intro">
+            <h3>Organizers</h3>
+            <p id="organizer-note">Organizers are the point of contact for suggesting a reading, volunteering to present or asking about attending.</p>
+          </div>
+          <ul class="people-grid organizers" id="organizers"></ul>
+        </div>
+        <div class="people-block">
+          <div class="people-intro">
+            <h3>Participants</h3>
+            <p>Current regular participants. Many people come to some sessions and not others, and that's fine.</p>
+          </div>
+          <ul class="people-grid" id="participants"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="surveys" aria-labelledby="surveys-title">
+      <div class="wrap">
+        <h2 class="section-title" id="surveys-title">Surveys</h2>
+        <div class="survey-layout">
+          <div class="survey-tabs" id="survey-tabs" role="tablist" aria-label="Surveys"></div>
+          <div class="survey-panel" id="survey-panel" role="tabpanel"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap footer-inner">
+      <div>
+        <p class="footer-name" data-bind="groupName">Causal Inference Reading Group</p>
+        <p class="muted" data-bind="affiliation"></p>
+        <p class="muted sample-note" id="sample-note"></p>
+      </div>
+      <ul class="footer-links" id="footer-links"></ul>
+    </div>
+  </footer>
+
+  <dialog class="pdf-dialog" id="pdf-dialog" aria-labelledby="pdf-title">
+    <div class="pdf-bar">
+      <p id="pdf-title" class="pdf-title"></p>
+      <a id="pdf-open" class="btn btn-quiet" href="#" target="_blank" rel="noopener">Open in new tab</a>
+      <button type="button" class="btn btn-quiet" id="pdf-close">Close</button>
+    </div>
+    <iframe id="pdf-frame" title="PDF viewer"></iframe>
+  </dialog>
+
+  <noscript><p class="wrap">This page needs JavaScript to show the schedule, papers and surveys.</p></noscript>
+</body>
+</html>
