@@ -645,6 +645,42 @@ body.locked .private { display: none !important; }
   .chat-form { padding: 12px 14px 14px; }
 }
 
+/* Write-in topics, chat editing, shared files */
+.other-row { display: flex; gap: 8px; margin-top: 12px; max-width: 440px; }
+.other-row input { flex: 1; }
+.ed-row.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.chat-edited { font-style: italic; }
+.chat-meta .chat-edit-btn { margin-left: auto; }
+.chat-meta .chat-edit-btn + .btn { margin-left: 0; }
+.chat-edit textarea { width: 100%; }
+.files-box { max-width: 780px; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius); }
+.files-form { padding: 16px 20px; border-bottom: 1px solid var(--rule); }
+.file-fields { display: grid; grid-template-columns: 170px minmax(0, 1fr) auto; gap: 10px; align-items: center; }
+.file-fields input[type="text"] { grid-column: 1 / 3; }
+.file-fields input[type="file"] { font: 400 14px var(--sans); color: var(--ink-2); }
+.file-fields .btn { grid-column: 3; grid-row: 1 / 3; align-self: stretch; padding-inline: 20px; }
+.file-list { list-style: none; padding: 4px 20px 8px; }
+.file { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--rule); }
+.file:last-child { border-bottom: 0; }
+.file-name { font-weight: 600; overflow-wrap: anywhere; }
+.file-meta, .file-note { margin: 2px 0 0; font-size: 13.5px; color: var(--muted); }
+.file-note { color: var(--ink-2); }
+.file-actions { display: flex; gap: 4px; align-items: center; }
+@media (max-width: 600px) {
+  .file-fields { grid-template-columns: minmax(0, 1fr); }
+  .file-fields input[type="text"], .file-fields .btn { grid-column: auto; grid-row: auto; }
+  .file-fields .btn { height: 44px; }
+  .files-form, .file-list { padding-inline: 14px; }
+}
+
+/* Organizer tools bar */
+.org-bar { background: var(--accent-tint); border-bottom: 1px solid var(--rule); }
+.org-inner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-top: 10px; padding-bottom: 10px; }
+.org-label { font-weight: 600; font-size: 14px; margin-right: 6px; color: var(--accent-text); }
+.org-bar .btn { padding: 7px 12px; font-size: 13.5px; }
+.editor-hr { border: 0; border-top: 1px solid var(--rule); margin: 4px 0; }
+.paper-note { font-size: 14.5px; color: var(--ink-2); margin: 6px 0 0; max-width: 70ch; }
+
 /* ---------- Footer ---------- */
 
 .site-footer { border-top: 1px solid var(--rule); padding: 36px 0 48px; font-size: 15px; }

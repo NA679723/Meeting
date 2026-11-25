@@ -5,7 +5,8 @@ A members-only site for the reading group, hosted free on GitHub Pages:
 - **Next session** at the top, filled in automatically from the schedule
 - **Vote**: pick your name, up to three topics, and the dates and times you can make; live results show who has voted
 - **Schedule**: month calendar and list of sessions, with "Add to Google Calendar"
-- **Chat**: a simple group chat
+- **Chat**: a simple group chat (edit your own messages)
+- **Shared files**: upload slides, notes or PDFs for the group
 - **Papers**: every reading added to a session, with links
 - **Members**: the member list
 
@@ -36,12 +37,18 @@ Each device remembers the code until someone clicks **Lock this device** at the 
 
 ## Everyday use (organizers)
 
-- **Add or change a session:** **Add a session** in the top box, or **Edit schedule** in the Schedule section. Pick a date, tap a time, tap a topic, tap the presenter, add a reading link, then **Save session**.
-- **Delete a vote or proposal:** in the Vote section, click **Manage answers**, then tap **Delete** twice.
-- **Delete a chat message:** tap **Delete** twice next to it.
-- **Change members:** **Edit members** in the Members section.
+Open the site with the organizer code. An **Organizer tools** bar appears at the top:
 
-You can also edit or delete rows directly in the Google Sheet. The tabs are **Members**, **Sessions**, **Responses** (votes and proposals) and **Chat**.
+- **Site info**: group name, description, lab, regular meeting time, usual place and online link, quick start-time buttons, contact email
+- **Schedule**: add, edit or delete sessions (date, time, topic, presenter, reading, what to prepare, slides and recording links)
+- **Vote**: topics, date range, time slots, closing date, and the wording of every question
+- **Proposal form**: the wording of the Volunteer to present form
+- **Members**: one name per line
+- **Add paper**: add papers to the library; **Edit** and **Delete** appear next to them
+
+Next to answers, chat messages and files, **Manage answers** and **Delete** (tap twice) remove things. Members can edit their own chat messages.
+
+You can also edit or delete rows directly in the Google Sheet. The tabs are **Members**, **Sessions**, **Responses** (votes and proposals), **Chat**, **Files** and **Settings**. Shared files are stored in a Drive folder called **Reading group shared files**, and each file can be opened by anyone who has its link.
 
 ## Settings in the repository
 

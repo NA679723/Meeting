@@ -13,8 +13,10 @@
  * "Who has access: Anyone" only lets the website reach this script. Nothing is handed out
  * without one of the two codes below, and this sheet itself stays private to you.
  *
- * Tabs: Members (one name per row), Sessions, Responses (votes and proposals), Chat.
- * You can edit or delete rows here directly too.
+ * Tabs: Members (one name per row), Sessions, Responses (votes and proposals), Chat, Files, Settings.
+ * You can edit or delete rows here directly too. Shared files go into a Drive folder called
+ * "Reading group shared files"; each file can be opened by people who have its link.
+ * When you deploy, Google asks for permission to use Drive: that is for the shared files.
  */
 
 const GROUP_CODE = 'change-me-group';  // ← members type this to open the site
@@ -24,7 +26,9 @@ const TABS = {
   Members: ['name'],
   Sessions: ['id', 'updated', 'title', 'session'],
   Responses: ['time', 'form', 'key', 'summary', 'answers'],
-  Chat: ['id', 'time', 'name', 'text']
+  Chat: ['id', 'time', 'name', 'text', 'edited'],
+  Files: ['id', 'time', 'name', 'filename', 'url', 'size', 'note', 'driveId'],
+  Settings: ['key', 'value']
 };
 
 function tab_(name) {
@@ -72,7 +76,7 @@ function doPost(e) {
     const body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
     const role = role_(body.code);
     if (!role) return json_({ ok: false, code: 'bad_code', error: 'Wrong code.' });
-    const organizerOnly = ['session', 'members', 'response', 'chat-delete'];
+    const organizerOnly = ['session', 'members', 'response', 'chat-delete', 'settings', 'file-delete'];
     if (organizerOnly.indexOf(body.kind) !== -1 && role !== 'organizer') {
       return json_({ ok: false, code: 'bad_code', error: 'Only organizers can do this.' });
     }
@@ -81,6 +85,10 @@ function doPost(e) {
       case 'answer': return answer_(body);
       case 'chat': return chat_(body);
       case 'chat-delete': return deleteById_('Chat', String(body.id || ''));
+      case 'chat-edit': return chatEdit_(body);
+      case 'settings': return settings_(body);
+      case 'file': return file_(body);
+      case 'file-delete': return fileDelete_(body);
       case 'session': return session_(body);
       case 'members': return members_(body);
       case 'response': return deleteResponse_(body);
@@ -104,9 +112,14 @@ function load_(role) {
     rows.push({ at: iso_(r[0]), survey: String(r[1]), key: String(r[2]), answers: answers });
   });
   const chat = rows_('Chat').slice(-300).map(function (r) {
-    return { id: String(r[0]), at: iso_(r[1]), name: String(r[2]), text: String(r[3]) };
+    return { id: String(r[0]), at: iso_(r[1]), name: String(r[2]), text: String(r[3]), edited: r[4] ? iso_(r[4]) : '' };
   });
-  return json_({ ok: true, role: role, members: members, sessions: sessions, rows: rows, chat: chat });
+  const files = rows_('Files').map(function (r) {
+    return { id: String(r[0]), at: iso_(r[1]), name: String(r[2]), filename: String(r[3]), url: String(r[4]), size: Number(r[5]) || 0, note: String(r[6]) };
+  });
+  const settings = {};
+  rows_('Settings').forEach(function (r) { try { settings[String(r[0])] = JSON.parse(r[1]); } catch (err) { /* skip */ } });
+  return json_({ ok: true, role: role, members: members, sessions: sessions, rows: rows, chat: chat, files: files, settings: settings });
 }
 
 function answer_(body) {
@@ -182,5 +195,60 @@ function deleteById_(name, id) {
   if (!id) return json_({ ok: false, error: 'Missing id.' });
   const row = findRow_(name, id);
   if (row > 0) tab_(name).deleteRow(row);
+  return json_({ ok: true });
+}
+
+function chatEdit_(body) {
+  const id = String(body.id || '');
+  const text = String(body.text || '').trim().slice(0, 1000);
+  if (!id || !text) return json_({ ok: false, error: 'Missing message.' });
+  const row = findRow_('Chat', id);
+  if (row < 0) return json_({ ok: false, error: 'Message not found.' });
+  tab_('Chat').getRange(row, 4, 1, 2).setValues([["'" + text, new Date().toISOString()]]);
+  return json_({ ok: true });
+}
+
+function settings_(body) {
+  const key = String(body.key || '').slice(0, 40);
+  if (!key) return json_({ ok: false, error: 'Missing setting name.' });
+  const text = JSON.stringify(body.value == null ? null : body.value);
+  if (text.length > 20000) return json_({ ok: false, error: 'Setting too long.' });
+  const row = findRow_('Settings', key);
+  if (row > 0) tab_('Settings').getRange(row, 1, 1, 2).setValues([[key, text]]);
+  else tab_('Settings').appendRow([key, text]);
+  return json_({ ok: true });
+}
+
+function folder_() {
+  const props = PropertiesService.getScriptProperties();
+  const id = props.getProperty('FOLDER_ID');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (err) { /* folder deleted: make a new one */ } }
+  const folder = DriveApp.createFolder('Reading group shared files');
+  props.setProperty('FOLDER_ID', folder.getId());
+  return folder;
+}
+
+function file_(body) {
+  const name = String(body.name || '').trim().slice(0, 80);
+  const filename = String(body.filename || 'file').replace(/[\\/]/g, '_').slice(0, 150);
+  const data = String(body.data || '');
+  if (!name || !data) return json_({ ok: false, error: 'Missing name or file.' });
+  if (data.length > 14000000) return json_({ ok: false, error: 'File too large (10 MB at most).' });
+  const blob = Utilities.newBlob(Utilities.base64Decode(data), String(body.mime || 'application/octet-stream'), filename);
+  const file = folder_().createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  const id = Utilities.getUuid();
+  const url = file.getUrl();
+  tab_('Files').appendRow([id, new Date().toISOString(), "'" + name, "'" + filename, url, blob.getBytes().length, "'" + String(body.note || '').slice(0, 300), file.getId()]);
+  return json_({ ok: true, id: id, url: url });
+}
+
+function fileDelete_(body) {
+  const id = String(body.id || '');
+  const row = findRow_('Files', id);
+  if (row < 0) return json_({ ok: true });
+  const driveId = String(tab_('Files').getRange(row, 8).getValue());
+  try { DriveApp.getFileById(driveId).setTrashed(true); } catch (err) { /* already gone */ }
+  tab_('Files').deleteRow(row);
   return json_({ ok: true });
 }

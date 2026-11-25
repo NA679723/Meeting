@@ -2,7 +2,7 @@
   {
     "id": "vote",
     "title": "Vote: topics and meeting time",
-    "description": "Choose your name, tap up to three topics, and tap every date and time you can make. Then press Submit vote.",
+    "description": "Choose your name, tap every topic you're interested in (or add your own), and tap every date and time you can make. Then press Submit vote.",
     "status": "open",
     "closes": "2026-12-18",
     "showResults": true,
@@ -18,7 +18,6 @@
         "id": "topics",
         "type": "multi",
         "style": "chips",
-        "max": 3,
         "required": true,
         "label": "Topics you want to read",
         "options": [
@@ -29,7 +28,9 @@
           "Causal representation learning",
           "Latent action",
           "Causal identification and bounding (theory)"
-        ]
+        ],
+        "allowOther": true,
+        "otherPlaceholder": "Add your own topic"
       },
       {
         "id": "times",
@@ -68,8 +69,14 @@
         "id": "paper",
         "type": "text",
         "required": true,
-        "label": "Paper or topic",
-        "placeholder": "Title, arXiv link or DOI"
+        "label": "Paper title or topic",
+        "placeholder": "Title"
+      },
+      {
+        "id": "link",
+        "type": "url",
+        "label": "Paper link",
+        "placeholder": "https://arxiv.org/abs/…"
       },
       {
         "id": "when",

@@ -194,12 +194,15 @@
     try {
       const [config, sessions, papers, members, surveys] =
         await Promise.all(['config', 'sessions', 'papers', 'members', 'surveys'].map(loadJSON));
-      S.config = config || {};
+      S.baseConfig = config || {};
+      S.settings = { info: readCachedInfo() };
+      applyInfo(false);
       S.basePapers = papers || [];
       S.baseSessions = sessions || [];
       S.remoteSessions = [];
       S.baseMembers = members || [];
-      S.surveys = surveys || [];
+      S.baseSurveys = surveys || [];
+      applyVoteSettings();
       applyMembers();
       rebuildData();
       S.repo = detectRepo(S.config);
@@ -213,7 +216,7 @@
 
     const steps = [bindText, setupPdfDialog, renderNext, () => renderRoadmap(true), renderAbout, renderTrackFilter,
       renderCalendar, renderAgenda, setupCalendarActions, renderPaperToolbar, renderPapers,
-      renderPeople, renderSurveyTabs, renderFooter, renderEditButtons, renderChat];
+      renderPeople, renderSurveyTabs, renderFooter, renderEditButtons, renderChat, renderFiles, renderOrgBar, renderPaperActions];
     for (const step of steps) {
       try { step(); } catch (err) { console.error(err); }
     }
@@ -289,13 +292,23 @@
       }
       if (!db) { clearTimeout(timer); B.status = 'unavailable'; onBackendChange(true); return; }
       B.db = db;
+      try { S.assets = await window.claude.use('assets'); } catch (e) { S.assets = null; }
       const quiet = () => { /* optional data; the rest of the page still works */ };
+      db.collection('files').onSnapshot((snap) => {
+        setFiles(snap.docs.map((d) => Object.assign({}, d.data() || {}, { id: d.id })));
+      }, quiet);
       db.collection('sessions').onSnapshot((snap) => {
         setRemoteSessions(snap.docs.map((d) => Object.assign({ id: d.id }, d.data() || {})));
       }, quiet);
       db.collection('site').onSnapshot((snap) => {
         const doc = snap.docs.find((d) => d.id === 'members');
         setRemoteMembers(doc ? (doc.data() || {}).names : null);
+        const vote = snap.docs.find((d) => d.id === 'vote');
+        setVoteSettings(vote ? (vote.data() || {}).value : null);
+        for (const key of ['info', 'forms', 'papers']) {
+          const doc = snap.docs.find((d) => d.id === key);
+          if (doc || key !== 'info') setSetting(key, doc ? (doc.data() || {}).value : null);
+        }
       }, quiet);
       db.collection('chat').orderBy('at', 'desc').limit(300).onSnapshot((snap) => {
         setChat(snap.docs.map((d) => Object.assign({}, d.data() || {}, { id: d.id })));
@@ -356,6 +369,12 @@
     if (Array.isArray(out.members)) setRemoteMembers(out.members);
     if (Array.isArray(out.sessions)) setRemoteSessions(out.sessions);
     if (Array.isArray(out.chat)) setChat(out.chat);
+    if (Array.isArray(out.files)) setFiles(out.files);
+    const st = out.settings || {};
+    setVoteSettings(st.vote || null);
+    if (st.info) setSetting('info', st.info);
+    setSetting('forms', st.forms || null);
+    setSetting('papers', st.papers || null);
   }
 
   async function unlock(code, silent) {
@@ -397,11 +416,13 @@
     B.rows = null;
     B.status = 'locked';
     setChat([]);
+    setFiles([]);
+    setSetting('papers', null);
     setRemoteMembers(null);
     setRemoteSessions([]);
     setLocked(true);
     renderLock(message);
-    try { renderFooter(); renderEditButtons(); } catch (e) { console.error(e); }
+    try { renderFooter(); renderEditButtons(); renderOrgBar(); renderPaperActions(); } catch (e) { console.error(e); }
   }
 
   async function loadSheet() {
@@ -466,7 +487,7 @@
 
   function onBackendChange(statusChanged) {
     if (statusChanged) {
-      try { renderNext(); renderEditButtons(); renderChat(); renderFooter(); } catch (e) { console.error(e); }
+      try { renderNext(); renderEditButtons(); renderChat(); renderFiles(); renderFooter(); renderOrgBar(); renderPaperActions(); } catch (e) { console.error(e); }
     }
     if (!S.survey) return;
     if (statusChanged && !S.formDirty) { renderSurveyPanel(); return; }
@@ -545,6 +566,7 @@
     try {
       renderPeople();
       renderChatForm();
+      renderFileForm();
       if (!S.formDirty) renderSurveyPanel();
     } catch (e) { console.error(e); }
   }
@@ -560,7 +582,7 @@
   function setChat(list) {
     const clean = (list || [])
       .filter((m) => m && typeof m.text === 'string' && m.text.trim())
-      .map((m) => ({ id: String(m.id || ''), at: String(m.at || ''), name: typeof m.name === 'string' ? m.name.slice(0, 80) : '', text: m.text.slice(0, 2000) }))
+      .map((m) => ({ id: String(m.id || ''), at: String(m.at || ''), name: typeof m.name === 'string' ? m.name.slice(0, 80) : '', text: m.text.slice(0, 2000), edited: typeof m.edited === 'string' ? m.edited : '' }))
       .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
     const sig = JSON.stringify(clean);
     if (sig === S.chatSig) return;
@@ -571,9 +593,10 @@
 
   async function sendChat(name, text) {
     const m = { name, text: text.slice(0, 1000), at: new Date().toISOString() };
-    if (B.kind === 'artifact') { await B.db.collection('chat').add(m); return; }
+    if (B.kind === 'artifact') { const ref = await B.db.collection('chat').add(m); rememberMyChat(ref && ref.id); return; }
     if (B.kind === 'sheet') {
       const out = await sheetPost(Object.assign({ kind: 'chat' }, m));
+      rememberMyChat(out && out.id);
       setChat((S.chat || []).concat([Object.assign({ id: (out && out.id) || 'tmp-' + Date.now() }, m)]));
       setTimeout(loadSheet, 1500);
       return;
@@ -603,10 +626,10 @@
     const c = S.config;
     for (const n of $$('[data-bind]')) {
       const v = c[n.dataset.bind];
-      if (v) n.textContent = v;
+      if (v) { n.textContent = v; n.hidden = false; }
       else if (n.dataset.bind !== 'groupName') n.hidden = true;
     }
-    if (!c.regularTime) $('.regular').hidden = true;
+    $('.regular').hidden = !c.regularTime;
     if (c.groupName) document.title = c.groupName;
     if (c.labUrl) {
       const a = $('#nav-lab');
@@ -1143,11 +1166,7 @@
       clearTimeout(timer);
       timer = setTimeout(() => { S.paperFilter.q = e.target.value.trim().toLowerCase(); renderPapers(); }, 120);
     };
-    const actions = $('#paper-actions');
-    fill(actions,
-      S.config.sharedFolderUrl ? el('a', { class: 'btn', href: S.config.sharedFolderUrl, target: '_blank', rel: 'noopener' }, 'Open shared folder') : null,
-      S.surveys.some((v) => v.id === 'present') ? el('a', { class: 'btn btn-quiet', href: '#survey-present' }, 'Propose a paper to present') : null
-    );
+    renderPaperActions();
   }
 
   function renderPapers() {
@@ -1197,6 +1216,7 @@
           el('h3', { class: 'paper-title' }, p.url || p.pdf ? el('a', { href: p.url || p.pdf, target: '_blank', rel: 'noopener' }, p.title) : p.title),
           el('p', { class: 'paper-authors' }, p.authors),
           el('p', { class: 'paper-venue' }, [p.venue, p.year].filter(Boolean).join(', ')),
+          p.note ? el('p', { class: 'paper-note' }, p.note) : null,
           (p.tags || []).length ? el('ul', { class: 'tag-list', 'aria-label': 'Tags' }, p.tags.map((t) => el('li', null,
             el('button', {
               class: 'tag', type: 'button', title: 'Show papers tagged ' + t,
@@ -1206,7 +1226,9 @@
           el('p', { class: 'paper-status ' + st.kind }, status),
           el('div', { class: 'paper-actions' },
             p.pdf ? pdfControl(p, 'btn', p.derived ? 'Open' : 'Read PDF') : null,
-            p.url && !p.derived ? el('a', { class: 'btn btn-quiet', href: p.url, target: '_blank', rel: 'noopener' }, 'Paper page') : null)));
+            p.url && !p.derived ? el('a', { class: 'btn btn-quiet', href: p.url, target: '_blank', rel: 'noopener' }, 'Paper page') : null,
+            p.manual && isOrganizer() ? el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => openPaperEditor(p.id) }, 'Edit') : null,
+            p.manual && isOrganizer() ? twoTapButton('Delete', () => deletePaper(p.id), () => {}) : null)));
     }));
   }
 
@@ -1390,6 +1412,7 @@
     panel.setAttribute('aria-labelledby', 'tab-' + sv.id);
     fill(panel,
       el('h3', null, sv.title),
+      isOrganizer() ? el('p', { class: 'edit-link' }, el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => openFormEditor(sv.id) }, sv.id === 'vote' ? 'Edit topics, dates, times and wording' : 'Edit this form')) : null,
       el('p', { class: 'survey-status' }, surveyStatusText(sv)),
       sv.description ? el('p', { class: 'survey-desc' }, sv.description) : null);
     S.formDirty = false;
@@ -1463,6 +1486,21 @@
           q.type === 'multi' && q.max ? el('p', { class: 'hint' }, 'Choose up to ' + q.max + '.') : null,
           choiceList(sv, q, name, resolveOptions(q)));
         if (q.type === 'multi' && q.max) limitChoices(fs, q.max);
+        if (q.type === 'multi' && q.allowOther) {
+          const inp = el('input', { type: 'text', class: 'other-input', placeholder: q.otherPlaceholder || 'Add your own', 'aria-label': q.otherPlaceholder || 'Add your own', maxlength: 120 });
+          const doAdd = () => {
+            const v = inp.value.trim();
+            if (!v) { inp.focus(); return; }
+            const list = $('.chips, .choices', fs);
+            const existing = $$('input', list).find((i) => i.value.toLowerCase() === v.toLowerCase());
+            if (existing) existing.checked = true;
+            else list.append(el('label', { class: 'chip' }, el('input', { type: 'checkbox', name, value: v, checked: true }), el('span', null, v)));
+            inp.value = '';
+            fs.dispatchEvent(new Event('change', { bubbles: true }));
+          };
+          inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); doAdd(); } });
+          fs.append(el('div', { class: 'other-row' }, inp, el('button', { class: 'btn', type: 'button', onclick: doAdd }, 'Add')));
+        }
         return fs;
       }
       case 'grid': {
@@ -1505,7 +1543,7 @@
       default:
         return el('label', { class: 'q', 'data-q': q.id, for: fid },
           el('span', { class: 'q-label' }, q.label, req),
-          el('input', { id: fid, type: 'text', name, placeholder: q.placeholder || null, autocomplete: 'off' }));
+          el('input', { id: fid, type: q.type === 'url' ? 'url' : 'text', name, placeholder: q.placeholder || null, autocomplete: 'off' }));
     }
   }
 
@@ -1547,6 +1585,14 @@
         else f.value = v == null ? '' : String(v);
       }
       const fs = form.querySelector('[data-q="' + q.id + '"]');
+      if (fs && q.type === 'multi' && q.allowOther) {
+        const list = $('.chips, .choices', fs);
+        for (const x of [].concat(v == null ? [] : v).map(String)) {
+          if (list && !fields.some((f) => f.value === x)) {
+            list.append(el('label', { class: 'chip' }, el('input', { type: 'checkbox', name: sv.id + '__' + q.id, value: x, checked: true }), el('span', null, x)));
+          }
+        }
+      }
       if (fs && q.type === 'multi') fs.dispatchEvent(new Event('change'));
     }
   }
@@ -1731,7 +1777,7 @@
       el('dl', { class: 'facts' }, (sv.questions || []).map((q) => {
         const v = r.answers[q.id];
         const text = Array.isArray(v) ? v.join(', ') : v == null ? '' : String(v);
-        return text ? [el('dt', null, q.label), el('dd', null, text)] : null;
+        return text ? [el('dt', null, q.label), el('dd', null, linkify(text))] : null;
       }))))));
   }
 
@@ -1819,7 +1865,8 @@
       const had = map.get(r.id);
       map.set(r.id, Object.assign({}, r, { _base: !!(had && had._base), _remote: true }));
     }
-    const papers = (S.basePapers || []).slice();
+    const papers = (S.basePapers || []).slice()
+      .concat(((S.settings && S.settings.papers) || []).map((p) => ({ id: p.id, title: p.title, authors: p.authors, url: p.url, pdf: p.url, note: p.note, year: '', venue: '', tags: [], manual: true, derived: true })));
     const ids = new Set(papers.map((p) => p.id));
     const list = Array.from(map.values()).map((s) => {
       const extra = [];
@@ -2202,6 +2249,7 @@
       return;
     }
     const manage = isOrganizer();
+    const mine = myChatIds();
     const note = $('#chat-note');
     let lastDay = '';
     const items = [];
@@ -2214,10 +2262,13 @@
         el('p', { class: 'chat-meta' },
           el('strong', null, m.name || 'Someone'),
           ok ? el('span', null, fmtTime(d)) : null,
+          m.edited ? el('span', { class: 'chat-edited' }, '(edited)') : null,
+          (manage || mine.has(m.id)) && m.id && !m.id.startsWith('tmp-') && S.chatEditing !== m.id
+            ? el('button', { class: 'btn btn-quiet chat-edit-btn', type: 'button', onclick: () => { S.chatEditing = m.id; S.chatEditDraft = null; S.chatSig = null; setChat(S.chat); } }, 'Edit') : null,
           manage && m.id && !m.id.startsWith('tmp-') ? twoTapButton('Delete', () => deleteChat(m.id), (err) => {
             if (note) { note.className = 'chat-note form-error'; note.textContent = editError(err); }
           }) : null),
-        el('p', { class: 'chat-text' }, linkify(m.text))));
+        S.chatEditing === m.id ? chatEditor(m, note) : el('p', { class: 'chat-text' }, linkify(m.text))));
     }
     list.replaceChildren(...items);
     if (nearBottom || !S.chatScrolled) {
@@ -2323,6 +2374,581 @@
         el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => d.close() }, 'Close')),
       el('div', { class: 'editor-body' }, msg, form));
     if (!d.open) d.showModal();
+  }
+
+  // ------------------------------------------------------------------ vote options, chat editing, shared files
+
+  // ---- vote options (topics, dates, time slots) edited on the website
+
+  function cleanVoteSettings(v) {
+    if (!v || typeof v !== 'object') return null;
+    const strs = (a, n) => (Array.isArray(a) ? a.filter((x) => typeof x === 'string').map((x) => x.trim().slice(0, 120)).filter(Boolean).slice(0, n) : null);
+    const day = (x) => (typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x) ? x : '');
+    return { topics: strs(v.topics, 60), from: day(v.from), to: day(v.to), weekdays: v.weekdays !== false, columns: strs(v.columns, 8), closes: day(v.closes) };
+  }
+
+  function applyVoteSettings() {
+    const v = S.voteSettings;
+    S.surveys = (S.baseSurveys || []).map((sv) => {
+      if (sv.id !== 'vote' || !v) return sv;
+      const copy = JSON.parse(JSON.stringify(sv));
+      for (const q of copy.questions || []) {
+        if (q.id === 'topics' && v.topics && v.topics.length) q.options = v.topics;
+        if (q.type === 'grid') {
+          if (v.from && v.to) q.rows = { from: v.from, to: v.to, weekdays: v.weekdays };
+          if (v.columns && v.columns.length) q.columns = v.columns;
+        }
+      }
+      copy.closes = v.closes || '';
+      return copy;
+    });
+    const f = (S.settings && S.settings.forms) || {};
+    S.surveys = S.surveys.map((sv) => {
+      const t = f[sv.id];
+      if (!t) return sv;
+      const c = JSON.parse(JSON.stringify(sv));
+      if (t.title) c.title = t.title;
+      if (t.description) c.description = t.description;
+      if (t.submitLabel) c.submitLabel = t.submitLabel;
+      for (const q of c.questions || []) if (t.labels && t.labels[q.id]) q.label = t.labels[q.id];
+      return c;
+    });
+  }
+
+  function updateTabStatus() {
+    for (const sv of S.surveys) {
+      const t = $('#tab-' + sv.id + ' .s');
+      if (t) t.textContent = surveyStatusText(sv);
+      const n = $('#tab-' + sv.id + ' .t');
+      if (n) n.textContent = sv.title;
+    }
+  }
+
+  function setVoteSettings(v) {
+    const clean = cleanVoteSettings(v);
+    const sig = JSON.stringify(clean);
+    if (sig === S.voteSig) return;
+    S.voteSig = sig;
+    S.voteSettings = clean;
+    applyVoteSettings();
+    if (S.survey && !S.formDirty) {
+      try { renderSurveyPanel(); updateTabStatus(); } catch (e) { console.error(e); }
+    }
+  }
+
+  async function saveSetting(key, value) {
+    if (B.kind === 'artifact') { await B.db.doc('site/' + key).set({ value }); return; }
+    if (B.kind === 'sheet') { await sheetPost({ kind: 'settings', key, value }); return; }
+    throw new Error('not connected');
+  }
+
+  // ---- chat editing
+
+  function myChatIds() {
+    try { return new Set(JSON.parse(localStorage.getItem('rg-mychat') || '[]')); } catch (e) { return new Set(); }
+  }
+  function rememberMyChat(id) {
+    if (!id) return;
+    try {
+      const ids = Array.from(myChatIds()).concat([id]).slice(-500);
+      localStorage.setItem('rg-mychat', JSON.stringify(ids));
+    } catch (e) { /* storage unavailable */ }
+  }
+
+  async function editChat(id, text) {
+    const t = text.slice(0, 1000);
+    const edited = new Date().toISOString();
+    if (B.kind === 'artifact') { await B.db.collection('chat').doc(id).update({ text: t, edited }); return; }
+    if (B.kind === 'sheet') {
+      await sheetPost({ kind: 'chat-edit', id, text: t });
+      setChat((S.chat || []).map((m) => (m.id === id ? Object.assign({}, m, { text: t, edited }) : m)));
+      return;
+    }
+    throw new Error('not connected');
+  }
+
+  function chatEditor(m, note) {
+    const ta = el('textarea', { rows: 3, maxlength: 1000, 'aria-label': 'Edit message' });
+    ta.value = S.chatEditDraft != null ? S.chatEditDraft : m.text;
+    ta.addEventListener('input', () => { S.chatEditDraft = ta.value; });
+    const save = el('button', { class: 'btn btn-primary', type: 'button' }, 'Save');
+    const cancel = el('button', { class: 'btn', type: 'button', onclick: () => { S.chatEditing = null; S.chatEditDraft = null; S.chatSig = null; setChat(S.chat); } }, 'Cancel');
+    save.addEventListener('click', async () => {
+      const t = ta.value.trim();
+      if (!t) { ta.focus(); return; }
+      save.disabled = true;
+      save.textContent = 'Saving…';
+      try {
+        await editChat(m.id, t);
+        S.chatEditing = null;
+        S.chatEditDraft = null;
+        S.chatSig = null;
+        setChat(S.chat);
+      } catch (err) {
+        save.disabled = false;
+        save.textContent = 'Save';
+        if (note) { note.className = 'chat-note form-error'; note.textContent = 'Couldn\'t save the change. Try again.'; }
+      }
+    });
+    setTimeout(() => ta.focus(), 0);
+    return el('div', { class: 'chat-edit' }, ta, el('div', { class: 'button-row', style: 'margin-top:8px' }, save, cancel));
+  }
+
+  // ---- shared files
+
+  function fmtSize(n) {
+    n = Number(n) || 0;
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    if (n >= 1024) return Math.round(n / 1024) + ' KB';
+    return n + ' bytes';
+  }
+
+  function setFiles(list) {
+    const clean = (list || []).filter((f) => f && typeof f.filename === 'string').map((f) => ({
+      id: String(f.id || ''),
+      at: String(f.at || ''),
+      name: typeof f.name === 'string' ? f.name.slice(0, 80) : '',
+      filename: f.filename.slice(0, 150),
+      url: typeof f.url === 'string' && (/^https:\/\//.test(f.url) || f.url.startsWith('/_blob/')) ? f.url : '',
+      size: Number(f.size) || 0,
+      note: typeof f.note === 'string' ? f.note.slice(0, 300) : '',
+      assetId: typeof f.assetId === 'string' ? f.assetId : ''
+    })).sort((a, b) => (a.at < b.at ? 1 : -1));
+    const sig = JSON.stringify(clean);
+    if (sig === S.filesSig) return;
+    S.filesSig = sig;
+    S.files = clean;
+    renderFileList();
+  }
+
+  function filesBlocked() {
+    if (B.kind === 'none') return 'File sharing isn\'t switched on yet.';
+    if (B.kind === 'pending' || B.status === 'loading') return 'Connecting…';
+    if (B.kind === 'sheet' && !S.access) return 'Enter the group code at the top of the page to share files.';
+    if (B.kind === 'artifact' && !B.db) return 'File sharing needs the page opened on claude.ai while signed in.';
+    if (B.kind === 'artifact' && !S.assets) return 'You can open the files but not upload. Ask the page owner for Contributor access.';
+    return null;
+  }
+
+  function maxUpload() { return B.kind === 'artifact' ? 20 * 1048576 : 10 * 1048576; }
+
+  function readBase64(file) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(',')[1] || '');
+      r.onerror = () => reject(r.error);
+      r.readAsDataURL(file);
+    });
+  }
+
+  async function uploadFile(file, name, note) {
+    const at = new Date().toISOString();
+    if (B.kind === 'artifact') {
+      const a = await S.assets.upload(file);
+      await B.db.collection('files').add({ name, note, at, filename: file.name, assetId: a.id, url: a.url || '/_blob/' + a.id, size: a.sizeBytes || file.size });
+      return;
+    }
+    if (B.kind === 'sheet') {
+      const data = await readBase64(file);
+      await sheetPost({ kind: 'file', name, note, filename: file.name, mime: file.type || 'application/octet-stream', size: file.size, data });
+      await loadSheet();
+      return;
+    }
+    throw new Error('not connected');
+  }
+
+  async function deleteFile(f) {
+    if (B.kind === 'artifact') {
+      if (f.assetId && S.assets) { try { await S.assets.delete(f.assetId); } catch (e) { /* already gone */ } }
+      await B.db.collection('files').doc(f.id).delete();
+      return;
+    }
+    if (B.kind === 'sheet') {
+      await sheetPost({ kind: 'file-delete', id: f.id });
+      setFiles((S.files || []).filter((x) => x.id !== f.id));
+      return;
+    }
+    throw new Error('not connected');
+  }
+
+  function renderFiles() {
+    renderFileForm();
+    renderFileList();
+  }
+
+  function renderFileList() {
+    const list = $('#file-list');
+    if (!list) return;
+    const files = S.files || [];
+    if (!files.length) {
+      list.replaceChildren(el('li', { class: 'chat-empty' }, 'No files yet. Share slides, notes or a PDF with the group.'));
+      return;
+    }
+    const manage = isOrganizer();
+    const note = $('#files-note');
+    list.replaceChildren(...files.map((f) => {
+      const d = f.at ? new Date(f.at) : null;
+      const meta = [f.name ? 'Shared by ' + f.name : '', d && !isNaN(d) ? fmtDate(d, { day: 'numeric', month: 'short' }) : '', f.size ? fmtSize(f.size) : ''].filter(Boolean).join(', ');
+      return el('li', { class: 'file' },
+        el('div', null,
+          f.url ? el('a', { class: 'file-name', href: f.url, target: '_blank', rel: 'noopener' }, f.filename) : el('span', { class: 'file-name' }, f.filename),
+          meta ? el('p', { class: 'file-meta' }, meta) : null,
+          f.note ? el('p', { class: 'file-note' }, f.note) : null),
+        el('div', { class: 'file-actions' },
+          f.url ? el('a', { class: 'btn', href: f.url, target: '_blank', rel: 'noopener' }, 'Open') : null,
+          manage && f.id ? twoTapButton('Delete', () => deleteFile(f), (err) => {
+            if (note) { note.className = 'chat-note form-error'; note.textContent = editError(err); }
+          }) : null));
+    }));
+  }
+
+  function renderFileForm() {
+    const form = $('#files-form');
+    if (!form) return;
+    const names = memberNames();
+    const blocked = filesBlocked();
+    const nameField = names.length
+      ? el('select', { id: 'file-name', 'aria-label': 'Your name' }, el('option', { value: '' }, 'Your name…'), names.map((n) => el('option', { value: n }, n)))
+      : el('input', { type: 'text', id: 'file-name', placeholder: 'Your name', 'aria-label': 'Your name' });
+    const saved = recallName();
+    if (saved && (!names.length || names.includes(saved))) nameField.value = saved;
+    const fileInput = el('input', { type: 'file', id: 'file-input', 'aria-label': 'File to share' });
+    const noteInput = el('input', { type: 'text', id: 'file-note-input', placeholder: 'Note (optional), e.g. slides for session 3', maxlength: 300, 'aria-label': 'Note' });
+    const up = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Upload');
+    const limit = B.kind === 'artifact' ? 'Up to 20 MB: PDF, images, video or text files.' : 'Up to 10 MB, any file type. Files go into a Google Drive folder that only people with the link can open.';
+    const note = el('p', { class: 'chat-note' + (blocked ? ' muted' : ''), id: 'files-note', 'aria-live': 'polite' }, blocked || limit);
+    if (blocked) { up.disabled = true; fileInput.disabled = true; }
+    fill(form, el('div', { class: 'file-fields' }, nameField, fileInput, noteInput, up), note);
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      if (up.disabled) return;
+      const name = nameField.value.trim();
+      const file = fileInput.files && fileInput.files[0];
+      const bad = (t) => { note.className = 'chat-note form-error'; note.textContent = t; };
+      if (!name) { bad('Choose your name first.'); nameField.focus(); return; }
+      if (!file) { bad('Choose a file first.'); fileInput.focus(); return; }
+      if (file.size > maxUpload()) { bad('That file is ' + fmtSize(file.size) + '. The limit is ' + fmtSize(maxUpload()) + '.'); return; }
+      up.disabled = true;
+      up.textContent = 'Uploading…';
+      note.className = 'chat-note';
+      note.textContent = 'Uploading ' + file.name + '…';
+      try {
+        await uploadFile(file, name, noteInput.value.trim());
+        rememberName(name);
+        fileInput.value = '';
+        noteInput.value = '';
+        note.textContent = 'Shared ' + file.name + '.';
+      } catch (err) {
+        bad(err && err.code === 'bad_code' ? 'Your code no longer works. Reload and enter the group code.'
+          : /type|extension|unsupported/i.test((err && (err.message || err.code)) || '') ? 'This file type can\'t be uploaded here. Try a PDF.'
+            : 'Couldn\'t upload. Check your connection and try again.');
+      }
+      up.disabled = false;
+      up.textContent = 'Upload';
+    };
+  }
+
+  // ------------------------------------------------------------------ more website editing (organizers)
+  // Stored as settings: "info" (site text), "forms" (form wording), "papers" (papers added by hand).
+
+  function cleanText(v, n) { return typeof v === 'string' ? v.trim().slice(0, n || 200) : ''; }
+
+  function cleanInfo(v) {
+    if (!v || typeof v !== 'object') return null;
+    const times = Array.isArray(v.sessionTimes) ? v.sessionTimes.filter((t) => typeof t === 'string' && /^\d{1,2}:\d{2}$/.test(t.trim())).map((t) => t.trim().padStart(5, '0')).slice(0, 8) : [];
+    return {
+      groupName: cleanText(v.groupName, 120), purpose: cleanText(v.purpose, 800), affiliation: cleanText(v.affiliation, 160),
+      regularTime: cleanText(v.regularTime, 160), defaultLocation: cleanText(v.defaultLocation, 160),
+      meetingLink: httpsOnly(cleanText(v.meetingLink, 400)), contactEmail: cleanText(v.contactEmail, 160), sessionTimes: times
+    };
+  }
+
+  function cleanForms(v) {
+    if (!v || typeof v !== 'object') return null;
+    const out = {};
+    for (const id of Object.keys(v).slice(0, 20)) {
+      const f = v[id];
+      if (!f || typeof f !== 'object') continue;
+      const labels = {};
+      if (f.labels && typeof f.labels === 'object') for (const k of Object.keys(f.labels).slice(0, 30)) labels[k] = cleanText(f.labels[k], 200);
+      out[id] = { title: cleanText(f.title, 120), description: cleanText(f.description, 600), submitLabel: cleanText(f.submitLabel, 40), labels };
+    }
+    return out;
+  }
+
+  function cleanPapers(v) {
+    if (!Array.isArray(v)) return null;
+    return v.filter((p) => p && typeof p.title === 'string' && p.title.trim()).slice(0, 300).map((p) => ({
+      id: cleanText(p.id, 60) || 'm' + Math.random().toString(36).slice(2, 10),
+      title: cleanText(p.title, 300), url: httpsOnly(cleanText(p.url, 600)),
+      authors: cleanText(p.authors, 300), note: cleanText(p.note, 400)
+    }));
+  }
+
+  function setSetting(key, value) {
+    const clean = key === 'info' ? cleanInfo(value) : key === 'forms' ? cleanForms(value) : key === 'papers' ? cleanPapers(value) : null;
+    S.settings = S.settings || {};
+    S.settingSigs = S.settingSigs || {};
+    const sig = JSON.stringify(clean);
+    if (S.settingSigs[key] === sig) return;
+    S.settingSigs[key] = sig;
+    S.settings[key] = clean;
+    try {
+      if (key === 'info') applyInfo(true);
+      if (key === 'forms') {
+        applyVoteSettings();
+        updateTabStatus();
+        if (S.survey && !S.formDirty) renderSurveyPanel();
+      }
+      if (key === 'papers') { rebuildData(); rerenderSchedule(); }
+    } catch (e) { console.error(e); }
+  }
+
+  function applyInfo(render) {
+    const i = (S.settings && S.settings.info) || null;
+    const c = Object.assign({}, S.baseConfig || {});
+    if (i) {
+      for (const k of ['groupName', 'purpose', 'affiliation', 'regularTime', 'defaultLocation', 'meetingLink', 'contactEmail']) {
+        if (k === 'groupName' || k === 'purpose') { if (i[k]) c[k] = i[k]; } else c[k] = i[k] || '';
+      }
+      if (i.sessionTimes && i.sessionTimes.length) c.sessionTimes = i.sessionTimes;
+      try { localStorage.setItem('rg-info', JSON.stringify(i)); } catch (e) { /* storage unavailable */ }
+    }
+    S.config = c;
+    if (!render) return;
+    for (const f of [bindText, renderNext, renderAgenda, renderPeople, renderFooter]) {
+      try { f(); } catch (e) { console.error(e); }
+    }
+  }
+
+  function readCachedInfo() {
+    try { return cleanInfo(JSON.parse(localStorage.getItem('rg-info') || 'null')); } catch (e) { return null; }
+  }
+
+  // ---- organizer bar
+
+  function renderOrgBar() {
+    let bar = $('#org-bar');
+    if (!bar) {
+      bar = el('div', { id: 'org-bar', class: 'org-bar', role: 'region', 'aria-label': 'Organizer tools' });
+      const main = $('#main');
+      main.insertBefore(bar, main.firstChild);
+    }
+    if (!isOrganizer()) { bar.hidden = true; bar.replaceChildren(); return; }
+    bar.hidden = false;
+    const b = (label, fn) => el('button', { class: 'btn', type: 'button', onclick: fn }, label);
+    fill(bar, el('div', { class: 'wrap org-inner' },
+      el('span', { class: 'org-label' }, 'Organizer tools'),
+      b('Site info', openInfoEditor),
+      b('Schedule', () => openEditor(null)),
+      b('Vote', () => openFormEditor('vote')),
+      S.surveys.some((v) => v.id === 'present') ? b('Proposal form', () => openFormEditor('present')) : null,
+      b('Members', openMembersEditor),
+      b('Add paper', () => openPaperEditor(null))));
+  }
+
+  function editorShell(title, body) {
+    const d = editorDialog();
+    fill(d,
+      el('div', { class: 'editor-bar' },
+        el('h2', { id: 'editor-title' }, title),
+        el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => d.close() }, 'Close')),
+      el('div', { class: 'editor-body' }, body));
+    if (!d.open) d.showModal();
+    return d;
+  }
+
+  function field(id, label, input, hint) {
+    input.id = id;
+    return el('label', { class: 'q', for: id },
+      el('span', { class: 'q-label' }, label),
+      hint ? el('span', { class: 'hint' }, hint) : null,
+      input);
+  }
+
+  function savingForm(fields, saveLabel, onSave) {
+    const msg = el('div', { class: 'editor-msg', 'aria-live': 'polite' });
+    const save = el('button', { class: 'btn btn-primary btn-big', type: 'submit' }, saveLabel);
+    const form = el('form', { class: 'survey-form editor-form', novalidate: true }, msg, fields,
+      el('div', { class: 'button-row' }, save, el('button', { class: 'btn', type: 'button', onclick: () => editorDialog().close() }, 'Close')));
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      save.disabled = true;
+      save.textContent = 'Saving…';
+      try {
+        const done = await onSave();
+        if (done !== false) msg.replaceChildren(el('p', { class: 'form-done' }, typeof done === 'string' ? done : 'Saved.'));
+      } catch (err) {
+        msg.replaceChildren(el('p', { class: 'form-error' }, err && err.userMessage ? err.userMessage : editError(err)));
+      }
+      save.disabled = false;
+      save.textContent = saveLabel;
+      msg.scrollIntoView({ block: 'nearest' });
+    });
+    return form;
+  }
+
+  function userError(text) { const e = new Error(text); e.userMessage = text; return e; }
+
+  // ---- site info
+
+  function openInfoEditor() {
+    S.dialogMode = 'info';
+    const c = S.config;
+    const t = (v, ph) => { const i = el('input', { type: 'text', placeholder: ph || '' }); i.value = v || ''; return i; };
+    const fName = t(c.groupName);
+    const fPurpose = el('textarea', { rows: 4 });
+    fPurpose.value = c.purpose || '';
+    const fAff = t(c.affiliation, 'Lab, university');
+    const fRegular = t(c.regularTime, 'e.g. Wednesdays, 4–5 PM GST');
+    const fPlace = t(c.defaultLocation, 'Room or "Online"');
+    const fLink = el('input', { type: 'url', placeholder: 'https://…' });
+    fLink.value = c.meetingLink || '';
+    const fTimes = el('textarea', { rows: 3 });
+    fTimes.value = (c.sessionTimes || []).join('\n');
+    const fEmail = t(c.contactEmail, 'name@example.com');
+    editorShell('Site info', savingForm([
+      field('in-name', 'Group name', fName),
+      field('in-purpose', 'Short description', fPurpose, 'Shown at the top of the page.'),
+      field('in-aff', 'Lab or university (optional)', fAff),
+      field('in-regular', 'Regular meeting time (optional)', fRegular, 'Shown at the top of the page.'),
+      field('in-place', 'Usual meeting place', fPlace, 'Used for every session that has no place of its own.'),
+      field('in-link', 'Usual online meeting link (optional)', fLink),
+      field('in-times', 'Quick start-time buttons, one per line', fTimes, 'In 24-hour time, e.g. 11:00, 14:00, 16:00. Used when adding a session.'),
+      field('in-email', 'Contact email (optional)', fEmail)
+    ], 'Save site info', async () => {
+      if (!fName.value.trim()) throw userError('Give the group a name.');
+      const value = {
+        groupName: fName.value, purpose: fPurpose.value, affiliation: fAff.value, regularTime: fRegular.value,
+        defaultLocation: fPlace.value, meetingLink: fLink.value.trim(), contactEmail: fEmail.value,
+        sessionTimes: fTimes.value.split('\n').map((x) => x.trim()).filter(Boolean)
+      };
+      if (value.meetingLink && !/^https?:\/\//.test(value.meetingLink)) throw userError('The meeting link should start with https://');
+      await saveSetting('info', value);
+      setSetting('info', value);
+      return 'Saved. The page now shows the new details.';
+    }));
+  }
+
+  // ---- forms (wording, and for the vote: topics, dates and times)
+
+  function openFormEditor(id) {
+    const sv = S.surveys.find((v) => v.id === id);
+    if (!sv) return;
+    S.dialogMode = 'form';
+    S.formDirty = false;
+    const fTitle = el('input', { type: 'text' });
+    fTitle.value = sv.title || '';
+    const fDesc = el('textarea', { rows: 3 });
+    fDesc.value = sv.description || '';
+    const fSubmit = el('input', { type: 'text' });
+    fSubmit.value = sv.submitLabel || 'Submit';
+    const labelInputs = (sv.questions || []).map((q) => {
+      const i = el('input', { type: 'text' });
+      i.value = q.label || '';
+      return { q, i };
+    });
+    const parts = [
+      field('fe-title', 'Form title', fTitle),
+      field('fe-desc', 'Instructions', fDesc),
+      el('fieldset', { class: 'q' }, el('legend', null, 'Question wording'),
+        labelInputs.map(({ q, i }, n) => field('fe-q-' + n, (q.type === 'member' ? 'Name question' : q.type === 'grid' ? 'Dates and times question' : 'Question ' + (n + 1)), i))),
+      field('fe-submit', 'Button text', fSubmit)
+    ];
+
+    let vote = null;
+    if (id === 'vote') {
+      const qT = (sv.questions || []).find((q) => q.id === 'topics') || {};
+      const qG = (sv.questions || []).find((q) => q.type === 'grid') || {};
+      const rows = qG.rows && !Array.isArray(qG.rows) ? qG.rows : {};
+      vote = {
+        topics: el('textarea', { rows: 8 }), from: el('input', { type: 'date' }), to: el('input', { type: 'date' }),
+        week: el('input', { type: 'checkbox', id: 'fe-week' }), cols: el('textarea', { rows: 4 }), close: el('input', { type: 'date' })
+      };
+      vote.topics.value = (Array.isArray(qT.options) ? qT.options : []).join('\n');
+      vote.from.value = rows.from || '';
+      vote.to.value = rows.to || '';
+      vote.week.checked = rows.weekdays !== false;
+      vote.cols.value = (qG.columns || []).join('\n');
+      vote.close.value = sv.closes || '';
+      parts.unshift(
+        field('fe-topics', 'Topics, one per line', vote.topics, 'Add a line to add a topic, delete a line to remove it. Votes already given are kept.'),
+        el('div', { class: 'ed-row two' }, field('fe-from', 'Dates from', vote.from), field('fe-to', 'Dates to', vote.to)),
+        el('label', { class: 'choice', for: 'fe-week' }, vote.week, el('span', null, 'Weekdays only (skip Saturday and Sunday)')),
+        field('fe-cols', 'Time slots, one per line', vote.cols, 'For example: 11 AM–12 PM'),
+        field('fe-close', 'Vote closes on (optional)', vote.close),
+        el('hr', { class: 'editor-hr' }));
+    }
+
+    editorShell(id === 'vote' ? 'Edit the vote' : 'Edit form: ' + sv.title, savingForm(parts, 'Save form', async () => {
+      if (vote) {
+        const lines = (t) => t.value.split('\n').map((x) => x.trim()).filter(Boolean);
+        const v = { topics: lines(vote.topics), from: vote.from.value, to: vote.to.value, weekdays: vote.week.checked, columns: lines(vote.cols), closes: vote.close.value };
+        if (!v.topics.length) throw userError('Add at least one topic.');
+        if (!v.from || !v.to) throw userError('Choose both dates.');
+        if (v.from > v.to) throw userError('The first date must come before the last date.');
+        if ((Date.parse(v.to) - Date.parse(v.from)) / 864e5 > 120) throw userError('Keep the date range under four months.');
+        if (!v.columns.length) throw userError('Add at least one time slot.');
+        await saveSetting('vote', v);
+        setVoteSettings(v);
+      }
+      const forms = Object.assign({}, (S.settings && S.settings.forms) || {});
+      const labels = {};
+      for (const { q, i } of labelInputs) if (i.value.trim()) labels[q.id] = i.value.trim();
+      forms[id] = { title: fTitle.value.trim(), description: fDesc.value.trim(), submitLabel: fSubmit.value.trim(), labels };
+      await saveSetting('forms', forms);
+      S.formDirty = false;
+      setSetting('forms', forms);
+      return 'Saved. The form now shows your changes.';
+    }));
+  }
+
+  // ---- papers added by hand
+
+  function manualPapers() { return ((S.settings && S.settings.papers) || []).slice(); }
+
+  function openPaperEditor(id) {
+    S.dialogMode = 'paper';
+    const list = manualPapers();
+    const p = id ? list.find((x) => x.id === id) : null;
+    const fTitle = el('input', { type: 'text', placeholder: 'Paper title' });
+    fTitle.value = p ? p.title : '';
+    const fUrl = el('input', { type: 'url', placeholder: 'https://arxiv.org/abs/…' });
+    fUrl.value = p ? p.url : '';
+    const fAuthors = el('input', { type: 'text', placeholder: 'e.g. Pearl, Mackenzie (optional)' });
+    fAuthors.value = p ? p.authors : '';
+    const fNote = el('textarea', { rows: 3, placeholder: 'Why read it, or which sections (optional)' });
+    fNote.value = p ? p.note : '';
+    editorShell(p ? 'Edit paper' : 'Add a paper', savingForm([
+      field('pp-title', 'Title', fTitle),
+      field('pp-url', 'Link', fUrl, 'arXiv, a PDF, or the publisher\'s page.'),
+      field('pp-authors', 'Authors', fAuthors),
+      field('pp-note', 'Note', fNote)
+    ], p ? 'Save paper' : 'Add paper', async () => {
+      if (!fTitle.value.trim()) throw userError('Write the paper title.');
+      const url = fUrl.value.trim();
+      if (url && !/^https?:\/\//.test(url)) throw userError('The link should start with https://');
+      const item = { id: p ? p.id : 'm' + Date.now().toString(36), title: fTitle.value.trim(), url, authors: fAuthors.value.trim(), note: fNote.value.trim() };
+      const next = p ? list.map((x) => (x.id === p.id ? item : x)) : list.concat([item]);
+      await saveSetting('papers', next);
+      setSetting('papers', next);
+      if (!p) { fTitle.value = ''; fUrl.value = ''; fAuthors.value = ''; fNote.value = ''; return 'Added. Add another, or close this window.'; }
+      return 'Saved.';
+    }));
+  }
+
+  async function deletePaper(id) {
+    const next = manualPapers().filter((x) => x.id !== id);
+    await saveSetting('papers', next);
+    setSetting('papers', next);
+  }
+
+  function renderPaperActions() {
+    const actions = $('#paper-actions');
+    if (!actions) return;
+    fill(actions,
+      isOrganizer() ? el('button', { class: 'btn btn-primary', type: 'button', onclick: () => openPaperEditor(null) }, 'Add paper') : null,
+      S.surveys.some((v) => v.id === 'present') ? el('a', { class: 'btn btn-quiet', href: '#survey-present' }, 'Propose a paper to present') : null);
   }
 
   // ------------------------------------------------------------------ footer
