@@ -681,6 +681,12 @@ body.locked .private { display: none !important; }
 .editor-hr { border: 0; border-top: 1px solid var(--rule); margin: 4px 0; }
 .paper-note { font-size: 14.5px; color: var(--ink-2); margin: 6px 0 0; max-width: 70ch; }
 
+/* Removable topic chips */
+.chip-wrap { display: inline-flex; align-items: center; gap: 2px; }
+.chip-x { border: 0; background: transparent; color: var(--muted); font: 600 18px/1 var(--sans); width: 28px; height: 32px; border-radius: 6px; cursor: pointer; }
+.chip-x:hover { color: var(--warn-rule); background: var(--paper); }
+.chip-x.armed { width: auto; padding: 0 8px; font-size: 13px; color: var(--warn-rule); border: 1px solid var(--warn-rule); }
+
 /* ---------- Footer ---------- */
 
 .site-footer { border-top: 1px solid var(--rule); padding: 36px 0 48px; font-size: 15px; }

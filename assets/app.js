@@ -1435,10 +1435,75 @@
   function choiceList(sv, q, name, opts) {
     const isMulti = q.type === 'multi';
     const chips = q.style === 'chips';
+    const canRemove = chips && sv.id === 'vote' && q.id === 'topics' && isOrganizer();
     return el('div', { class: chips ? 'chips' : 'choices' + (q.columns > 1 ? ' cols-' + Math.min(3, q.columns) : '') },
-      opts.map((o) => el('label', { class: chips ? 'chip' : 'choice' },
-        el('input', { type: isMulti ? 'checkbox' : 'radio', name, value: o }),
-        el('span', null, o))));
+      opts.map((o) => {
+        const label = el('label', { class: chips ? 'chip' : 'choice' },
+          el('input', { type: isMulti ? 'checkbox' : 'radio', name, value: o }),
+          el('span', null, o));
+        return canRemove ? el('span', { class: 'chip-wrap' }, label, removeTopicButton(o)) : label;
+      }));
+  }
+
+  function writeInChip(name, value) {
+    const wrap = el('span', { class: 'chip-wrap' });
+    const label = el('label', { class: 'chip' }, el('input', { type: 'checkbox', name, value, checked: true }), el('span', null, value));
+    const x = el('button', { class: 'chip-x', type: 'button', 'aria-label': 'Remove ' + value, title: 'Remove' }, '×');
+    x.addEventListener('click', () => {
+      const fs = wrap.closest('fieldset');
+      wrap.remove();
+      if (fs) fs.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    wrap.append(label, x);
+    return wrap;
+  }
+
+  function currentVoteSettings() {
+    const base = (S.baseSurveys || []).find((v) => v.id === 'vote');
+    if (!base) return null;
+    const qT = (base.questions || []).find((q) => q.id === 'topics') || {};
+    const qG = (base.questions || []).find((q) => q.type === 'grid') || {};
+    const rows = qG.rows && !Array.isArray(qG.rows) ? qG.rows : {};
+    const v = S.voteSettings || {};
+    const has = !!S.voteSettings;
+    return {
+      topics: v.topics && v.topics.length ? v.topics.slice() : (qT.options || []).slice(),
+      from: v.from || rows.from || '', to: v.to || rows.to || '',
+      weekdays: has ? v.weekdays !== false : rows.weekdays !== false,
+      columns: v.columns && v.columns.length ? v.columns.slice() : (qG.columns || []).slice(),
+      closes: has ? v.closes || '' : base.closes || '',
+      hideTopics: !!v.hideTopics, hideTimes: !!v.hideTimes
+    };
+  }
+
+  function removeTopicButton(topic) {
+    const x = el('button', { class: 'chip-x org', type: 'button', 'aria-label': 'Remove the topic ' + topic, title: 'Remove this topic (organizers)' }, '×');
+    let armed = false;
+    let timer;
+    x.addEventListener('click', async () => {
+      if (!armed) {
+        armed = true;
+        x.textContent = 'Remove?';
+        x.classList.add('armed');
+        timer = setTimeout(() => { armed = false; x.textContent = '×'; x.classList.remove('armed'); }, 3000);
+        return;
+      }
+      clearTimeout(timer);
+      const cur = currentVoteSettings();
+      cur.topics = cur.topics.filter((t) => t !== topic);
+      if (!cur.topics.length) { x.textContent = '×'; armed = false; return; }
+      x.disabled = true;
+      try {
+        await saveSetting('vote', cur);
+        S.formDirty = false;
+        setVoteSettings(cur);
+      } catch (err) {
+        x.disabled = false;
+        x.textContent = '×';
+        armed = false;
+      }
+    });
+    return x;
   }
 
   function limitChoices(fs, max) {
@@ -1494,7 +1559,7 @@
             const list = $('.chips, .choices', fs);
             const existing = $$('input', list).find((i) => i.value.toLowerCase() === v.toLowerCase());
             if (existing) existing.checked = true;
-            else list.append(el('label', { class: 'chip' }, el('input', { type: 'checkbox', name, value: v, checked: true }), el('span', null, v)));
+            else list.append(writeInChip(name, v));
             inp.value = '';
             fs.dispatchEvent(new Event('change', { bubbles: true }));
           };
@@ -1589,7 +1654,7 @@
         const list = $('.chips, .choices', fs);
         for (const x of [].concat(v == null ? [] : v).map(String)) {
           if (list && !fields.some((f) => f.value === x)) {
-            list.append(el('label', { class: 'chip' }, el('input', { type: 'checkbox', name: sv.id + '__' + q.id, value: x, checked: true }), el('span', null, x)));
+            list.append(writeInChip(sv.id + '__' + q.id, x));
           }
         }
       }
@@ -2384,7 +2449,7 @@
     if (!v || typeof v !== 'object') return null;
     const strs = (a, n) => (Array.isArray(a) ? a.filter((x) => typeof x === 'string').map((x) => x.trim().slice(0, 120)).filter(Boolean).slice(0, n) : null);
     const day = (x) => (typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x) ? x : '');
-    return { topics: strs(v.topics, 60), from: day(v.from), to: day(v.to), weekdays: v.weekdays !== false, columns: strs(v.columns, 8), closes: day(v.closes) };
+    return { topics: strs(v.topics, 60), from: day(v.from), to: day(v.to), weekdays: v.weekdays !== false, columns: strs(v.columns, 8), closes: day(v.closes), hideTopics: v.hideTopics === true, hideTimes: v.hideTimes === true };
   }
 
   function applyVoteSettings() {
@@ -2400,6 +2465,7 @@
         }
       }
       copy.closes = v.closes || '';
+      copy.questions = (copy.questions || []).filter((q) => !(v.hideTopics && q.id === 'topics') && !(v.hideTimes && q.type === 'grid'));
       return copy;
     });
     const f = (S.settings && S.settings.forms) || {};
@@ -2858,20 +2924,24 @@
 
     let vote = null;
     if (id === 'vote') {
-      const qT = (sv.questions || []).find((q) => q.id === 'topics') || {};
-      const qG = (sv.questions || []).find((q) => q.type === 'grid') || {};
-      const rows = qG.rows && !Array.isArray(qG.rows) ? qG.rows : {};
+      const cur = currentVoteSettings();
       vote = {
         topics: el('textarea', { rows: 8 }), from: el('input', { type: 'date' }), to: el('input', { type: 'date' }),
-        week: el('input', { type: 'checkbox', id: 'fe-week' }), cols: el('textarea', { rows: 4 }), close: el('input', { type: 'date' })
+        week: el('input', { type: 'checkbox', id: 'fe-week' }), cols: el('textarea', { rows: 4 }), close: el('input', { type: 'date' }),
+        askTopics: el('input', { type: 'checkbox', id: 'fe-ask-topics' }), askTimes: el('input', { type: 'checkbox', id: 'fe-ask-times' })
       };
-      vote.topics.value = (Array.isArray(qT.options) ? qT.options : []).join('\n');
-      vote.from.value = rows.from || '';
-      vote.to.value = rows.to || '';
-      vote.week.checked = rows.weekdays !== false;
-      vote.cols.value = (qG.columns || []).join('\n');
-      vote.close.value = sv.closes || '';
+      vote.topics.value = cur.topics.join('\n');
+      vote.from.value = cur.from;
+      vote.to.value = cur.to;
+      vote.week.checked = cur.weekdays;
+      vote.cols.value = cur.columns.join('\n');
+      vote.close.value = cur.closes;
+      vote.askTopics.checked = !cur.hideTopics;
+      vote.askTimes.checked = !cur.hideTimes;
       parts.unshift(
+        el('fieldset', { class: 'q' }, el('legend', null, 'Questions in the vote'),
+          el('label', { class: 'choice', for: 'fe-ask-topics' }, vote.askTopics, el('span', null, 'Ask about topics')),
+          el('label', { class: 'choice', for: 'fe-ask-times' }, vote.askTimes, el('span', null, 'Ask about dates and times'))),
         field('fe-topics', 'Topics, one per line', vote.topics, 'Add a line to add a topic, delete a line to remove it. Votes already given are kept.'),
         el('div', { class: 'ed-row two' }, field('fe-from', 'Dates from', vote.from), field('fe-to', 'Dates to', vote.to)),
         el('label', { class: 'choice', for: 'fe-week' }, vote.week, el('span', null, 'Weekdays only (skip Saturday and Sunday)')),
@@ -2883,7 +2953,7 @@
     editorShell(id === 'vote' ? 'Edit the vote' : 'Edit form: ' + sv.title, savingForm(parts, 'Save form', async () => {
       if (vote) {
         const lines = (t) => t.value.split('\n').map((x) => x.trim()).filter(Boolean);
-        const v = { topics: lines(vote.topics), from: vote.from.value, to: vote.to.value, weekdays: vote.week.checked, columns: lines(vote.cols), closes: vote.close.value };
+        const v = { topics: lines(vote.topics), from: vote.from.value, to: vote.to.value, weekdays: vote.week.checked, columns: lines(vote.cols), closes: vote.close.value, hideTopics: !vote.askTopics.checked, hideTimes: !vote.askTimes.checked };
         if (!v.topics.length) throw userError('Add at least one topic.');
         if (!v.from || !v.to) throw userError('Choose both dates.');
         if (v.from > v.to) throw userError('The first date must come before the last date.');
