@@ -6,6 +6,7 @@
   <title>Causal Inference Reading Group</title>
   <meta name="description" content="Schedule, shared papers, members and surveys for the causal inference reading group.">
   <meta name="theme-color" content="#16233a">
+  <meta name="robots" content="noindex, nofollow">
   <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -30,13 +31,13 @@
         </svg>
         <span data-bind="groupName">Causal Inference Reading Group</span>
       </a>
-      <nav class="site-nav" aria-label="Sections">
+      <nav class="site-nav private" aria-label="Sections">
         <ul>
           <li><a href="#surveys">Vote</a></li>
           <li><a href="#schedule">Schedule</a></li>
+          <li><a href="#chat">Chat</a></li>
           <li><a href="#papers">Papers</a></li>
           <li><a href="#people">Members</a></li>
-          <li><a href="#about">About</a></li>
           <li class="nav-external" hidden><a id="nav-lab" href="#" target="_blank" rel="noopener">Lab</a></li>
         </ul>
       </nav>
@@ -57,24 +58,16 @@
         </div>
 
         <div class="hero-grid">
+          <article class="next lock" id="lock" hidden></article>
           <article class="next" id="next-session" aria-live="polite">
             <p class="muted">Loading the schedule…</p>
           </article>
 
-          <figure class="roadmap">
-            <div class="roadmap-head">
-              <h2 class="roadmap-title">Reading roadmap</h2>
-              <p class="roadmap-note">Arrows run from a session to the ones that build on it. Select a session to see its details.</p>
-            </div>
-            <div class="roadmap-canvas" id="roadmap"></div>
-            <p class="roadmap-hint" id="roadmap-hint" hidden>Scroll sideways to see the whole roadmap.</p>
-            <figcaption class="roadmap-legend" id="roadmap-legend"></figcaption>
-          </figure>
         </div>
       </div>
     </section>
 
-    <section class="section" id="surveys" aria-labelledby="surveys-title">
+    <section class="section private" id="surveys" aria-labelledby="surveys-title">
       <div class="wrap">
         <h2 class="section-title" id="surveys-title">Vote</h2>
         <div class="survey-layout">
@@ -84,7 +77,7 @@
       </div>
     </section>
 
-    <section class="section" id="schedule" aria-labelledby="schedule-title">
+    <section class="section private" id="schedule" aria-labelledby="schedule-title">
       <div class="wrap">
         <div class="section-head">
           <h2 class="section-title" id="schedule-title">Schedule</h2>
@@ -101,7 +94,20 @@
       </div>
     </section>
 
-    <section class="section" id="papers" aria-labelledby="papers-title">
+    <section class="section private" id="chat" aria-labelledby="chat-title">
+      <div class="wrap">
+        <div class="section-head">
+          <h2 class="section-title" id="chat-title">Chat</h2>
+          <div class="section-actions" id="chat-actions"></div>
+        </div>
+        <div class="chat-box">
+          <ol class="chat-list" id="chat-list" aria-label="Messages"></ol>
+          <form class="chat-form" id="chat-form" novalidate></form>
+        </div>
+      </div>
+    </section>
+
+    <section class="section private" id="papers" aria-labelledby="papers-title">
       <div class="wrap">
         <div class="section-head">
           <h2 class="section-title" id="papers-title">Shared papers</h2>
@@ -123,9 +129,12 @@
       </div>
     </section>
 
-    <section class="section" id="people" aria-labelledby="people-title">
+    <section class="section private" id="people" aria-labelledby="people-title">
       <div class="wrap">
-        <h2 class="section-title" id="people-title">Members</h2>
+        <div class="section-head">
+          <h2 class="section-title" id="people-title">Members</h2>
+          <div class="section-actions" id="people-actions"></div>
+        </div>
         <div class="people-block">
           <div class="people-intro">
             <h3>Organizers</h3>
@@ -143,29 +152,6 @@
       </div>
     </section>
 
-    <section class="section" id="about" aria-labelledby="about-title">
-      <div class="wrap">
-        <h2 class="section-title" id="about-title">About the group</h2>
-        <div class="about-grid">
-          <div class="about-col">
-            <h3>What we read</h3>
-            <p id="scope-intro"></p>
-            <ul class="topic-list" id="scope-topics"></ul>
-          </div>
-          <div class="about-col">
-            <h3>How a session works</h3>
-            <ol class="format-list" id="format"></ol>
-            <p class="format-note" id="format-note" hidden></p>
-          </div>
-          <div class="about-col">
-            <h3>Taking part</h3>
-            <p id="participation"></p>
-            <dl class="tracks" id="tracks"></dl>
-            <div class="button-row" id="participate-actions"></div>
-          </div>
-        </div>
-      </div>
-    </section>
   </main>
 
   <footer class="site-footer">

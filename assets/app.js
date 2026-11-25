@@ -198,9 +198,9 @@
       S.basePapers = papers || [];
       S.baseSessions = sessions || [];
       S.remoteSessions = [];
-      S.members = members || [];
+      S.baseMembers = members || [];
       S.surveys = surveys || [];
-      S.membersById = Object.fromEntries(S.members.map((m) => [m.id, m]));
+      applyMembers();
       rebuildData();
       S.repo = detectRepo(S.config);
       const ref = S.next ? S.next.startDate : S.now;
@@ -213,7 +213,7 @@
 
     const steps = [bindText, setupPdfDialog, renderNext, () => renderRoadmap(true), renderAbout, renderTrackFilter,
       renderCalendar, renderAgenda, setupCalendarActions, renderPaperToolbar, renderPapers,
-      renderPeople, renderSurveyTabs, renderFooter, renderEditButtons];
+      renderPeople, renderSurveyTabs, renderFooter, renderEditButtons, renderChat];
     for (const step of steps) {
       try { step(); } catch (err) { console.error(err); }
     }
@@ -222,11 +222,12 @@
     initBackend();
   }
 
-  // ------------------------------------------------------------------ answer storage
-  // Answers are kept in one place, depending on where the page runs:
-  //  - on claude.ai (artifact): the page's own database
-  //  - on GitHub Pages: a Google Sheet, through config.voteUrl (see scripts/vote-backend.gs)
-  //  - otherwise: nowhere yet, and the form says so.
+  // ------------------------------------------------------------------ storage
+  // Where data lives depends on where the page runs:
+  //  - on claude.ai (artifact): the page's own database. Privacy comes from who the page is shared with.
+  //  - on GitHub Pages: a Google Sheet behind config.voteUrl (scripts/vote-backend.gs). Nothing personal
+  //    is in the public files; it loads only after someone enters the group code or the organizer code.
+  //  - otherwise: nowhere yet, and the forms say so.
 
   const B = { kind: 'none', status: 'off', rows: null, error: null, db: null, canEdit: false, canWrite: null };
 
@@ -237,55 +238,35 @@
     return hasClaude();
   }
 
+  function isOrganizer() {
+    if (B.kind === 'sheet') return S.role === 'organizer' && !!S.access;
+    if (B.kind === 'artifact') return !!B.db && B.canEdit;
+    return false;
+  }
+
   async function initBackend() {
     let inArtifact = IN_ARTIFACT || hasClaude();
+    const hasSheet = /^https:\/\//.test(S.config.voteUrl || '');
     const knownHost = location.protocol === 'file:' || /(^|\.)github\.io$|^localhost$|^127\.0\.0\.1$/.test(location.hostname);
-    if (!inArtifact && !knownHost && !/^https:\/\//.test(S.config.voteUrl || '')) {
+    if (!inArtifact && !knownHost && !hasSheet) {
       B.kind = 'pending';
       B.status = 'loading';
       onBackendChange(true);
       inArtifact = await waitForClaude(4000);
     }
-    if (inArtifact) {
-      B.kind = 'artifact';
-      B.status = 'loading';
-      const timer = setTimeout(() => {
-        if (B.status === 'loading') { B.status = 'timeout'; onBackendChange(true); }
-      }, 10000);
-      try {
-        const [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
-        if (user) {
-          try { B.canWrite = await user.can('data.write'); } catch (e) { B.canWrite = null; }
-          try { B.canEdit = !!(await user.canEdit()); } catch (e) { B.canEdit = false; }
-        }
-        if (!db) { clearTimeout(timer); B.status = 'unavailable'; onBackendChange(true); return; }
-        B.db = db;
-        db.collection('sessions').onSnapshot((snap) => {
-          setRemoteSessions(snap.docs.map((d) => Object.assign({ id: d.id }, d.data() || {})));
-        }, () => { /* schedule edits unavailable; sessions.json still shows */ });
-        db.collection('votes').onSnapshot((snap) => {
-          B.rows = snap.docs.map((d) => d.data() || {}).filter(validRow);
-          const before = B.status;
-          if (!snap.metadata.fromCache) { clearTimeout(timer); B.status = 'ready'; }
-          else if (B.status === 'loading') B.status = 'cached';
-          onBackendChange(before !== B.status && (before === 'loading' || before === 'timeout'));
-        }, (err) => {
-          clearTimeout(timer);
-          B.status = 'error';
-          B.error = err && err.code;
-          onBackendChange(true);
-        });
-      } catch (e) {
-        clearTimeout(timer);
-        B.status = 'unavailable';
-        onBackendChange(true);
-      }
-      return;
-    }
-    if (/^https:\/\//.test(S.config.voteUrl || '')) {
+    if (inArtifact) return initArtifact();
+    if (hasSheet) {
       B.kind = 'sheet';
-      B.status = 'loading';
-      await loadSheet();
+      setLocked(true);
+      const saved = readAccess();
+      if (saved) {
+        B.status = 'loading';
+        renderLock('Opening…');
+        await unlock(saved, true);
+      } else {
+        B.status = 'locked';
+        renderLock();
+      }
       return;
     }
     const wasPending = B.kind === 'pending';
@@ -294,22 +275,190 @@
     if (wasPending) onBackendChange(true);
   }
 
+  async function initArtifact() {
+    B.kind = 'artifact';
+    B.status = 'loading';
+    const timer = setTimeout(() => {
+      if (B.status === 'loading') { B.status = 'timeout'; onBackendChange(true); }
+    }, 10000);
+    try {
+      const [db, user] = await Promise.all([window.claude.use('db'), window.claude.use('user')]);
+      if (user) {
+        try { B.canWrite = await user.can('data.write'); } catch (e) { B.canWrite = null; }
+        try { B.canEdit = !!(await user.canEdit()); } catch (e) { B.canEdit = false; }
+      }
+      if (!db) { clearTimeout(timer); B.status = 'unavailable'; onBackendChange(true); return; }
+      B.db = db;
+      const quiet = () => { /* optional data; the rest of the page still works */ };
+      db.collection('sessions').onSnapshot((snap) => {
+        setRemoteSessions(snap.docs.map((d) => Object.assign({ id: d.id }, d.data() || {})));
+      }, quiet);
+      db.collection('site').onSnapshot((snap) => {
+        const doc = snap.docs.find((d) => d.id === 'members');
+        setRemoteMembers(doc ? (doc.data() || {}).names : null);
+      }, quiet);
+      db.collection('chat').orderBy('at', 'desc').limit(300).onSnapshot((snap) => {
+        setChat(snap.docs.map((d) => Object.assign({}, d.data() || {}, { id: d.id })));
+      }, quiet);
+      db.collection('votes').onSnapshot((snap) => {
+        B.rows = snap.docs.map((d) => Object.assign({}, d.data() || {}, { _id: d.id })).filter(validRow);
+        const before = B.status;
+        if (!snap.metadata.fromCache) { clearTimeout(timer); B.status = 'ready'; }
+        else if (B.status === 'loading') B.status = 'cached';
+        onBackendChange(before !== B.status && (before === 'loading' || before === 'timeout'));
+      }, (err) => {
+        clearTimeout(timer);
+        B.status = 'error';
+        B.error = err && err.code;
+        onBackendChange(true);
+      });
+    } catch (e) {
+      clearTimeout(timer);
+      B.status = 'unavailable';
+      onBackendChange(true);
+    }
+  }
+
+  // ---- Google Sheet (GitHub Pages)
+
+  function readAccess() { try { return localStorage.getItem('rg-access') || ''; } catch (e) { return ''; } }
+  function writeAccess(v) {
+    try { if (v) localStorage.setItem('rg-access', v); else localStorage.removeItem('rg-access'); } catch (e) { /* storage unavailable */ }
+  }
+
+  async function sheetPost(payload) {
+    const opts = {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(Object.assign({ code: S.access || '' }, payload))
+    };
+    let res;
+    try {
+      res = await fetch(S.config.voteUrl, opts);
+    } catch (e) {
+      if (!(e instanceof TypeError) || payload.kind === 'load') throw e;
+      // Some browsers block reading Google's reply; send it without reading the reply.
+      await fetch(S.config.voteUrl, Object.assign({}, opts, { mode: 'no-cors' }));
+      return { ok: true, unverified: true };
+    }
+    const out = await res.json().catch(() => null);
+    if (out && out.ok === false) {
+      const err = new Error(out.error || 'The sheet refused the request.');
+      err.code = out.code;
+      throw err;
+    }
+    if (!out && payload.kind === 'load') throw new Error('No data from the sheet.');
+    return out || { ok: true, unverified: true };
+  }
+
+  function applySheetData(out) {
+    B.rows = (out.rows || []).filter(validRow);
+    if (Array.isArray(out.members)) setRemoteMembers(out.members);
+    if (Array.isArray(out.sessions)) setRemoteSessions(out.sessions);
+    if (Array.isArray(out.chat)) setChat(out.chat);
+  }
+
+  async function unlock(code, silent) {
+    S.access = code;
+    try {
+      const out = await sheetPost({ kind: 'load' });
+      S.role = out.role === 'organizer' ? 'organizer' : 'member';
+      writeAccess(code);
+      applySheetData(out);
+      B.status = 'ready';
+      setLocked(false);
+      onBackendChange(true);
+      rerenderSchedule();
+      startPolling();
+      return true;
+    } catch (err) {
+      S.access = '';
+      S.role = '';
+      if (err.code === 'bad_code') writeAccess('');
+      B.status = 'locked';
+      renderLock(silent && err.code === 'bad_code' ? 'The saved code no longer works. Enter the group code.' : lockError(err));
+      return false;
+    }
+  }
+
+  function lockError(err) {
+    const c = err && err.code;
+    if (c === 'bad_code') return 'That code isn\'t right.';
+    if (c === 'no_code_set') return 'The organizer still needs to set the codes in the Google script.';
+    if (/Missing form/i.test((err && err.message) || '')) return 'The Google script needs updating to the latest version (see the README).';
+    return 'Couldn\'t reach the Google Sheet. Check your connection and try again.';
+  }
+
+  function lockDevice(message) {
+    writeAccess('');
+    S.access = '';
+    S.role = '';
+    S.manage = false;
+    B.rows = null;
+    B.status = 'locked';
+    setChat([]);
+    setRemoteMembers(null);
+    setRemoteSessions([]);
+    setLocked(true);
+    renderLock(message);
+    try { renderFooter(); renderEditButtons(); } catch (e) { console.error(e); }
+  }
+
   async function loadSheet() {
+    if (B.kind !== 'sheet' || !S.access) return;
     const before = B.status;
     try {
-      const url = S.config.voteUrl + (S.config.voteUrl.includes('?') ? '&' : '?') + 't=' + Date.now();
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const body = await res.json();
-      B.rows = (body.rows || []).filter(validRow);
-      if (Array.isArray(body.sessions)) setRemoteSessions(body.sessions);
+      const out = await sheetPost({ kind: 'load' });
+      applySheetData(out);
       B.status = 'ready';
     } catch (e) {
+      if (e.code === 'bad_code') { lockDevice('The group code has changed. Enter the new code.'); return; }
       B.status = 'error';
       B.error = String(e.message || e);
     }
     onBackendChange(before !== B.status);
   }
+
+  let pollTimer = null;
+  function startPolling() {
+    if (pollTimer) return;
+    pollTimer = setInterval(() => { if (document.visibilityState === 'visible') loadSheet(); }, 30000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') loadSheet(); });
+  }
+
+  function setLocked(on) {
+    document.body.classList.toggle('locked', !!on);
+    const lock = $('#lock');
+    if (lock) lock.hidden = !on;
+    const next = $('#next-session');
+    if (next) next.hidden = !!on;
+  }
+
+  function renderLock(message) {
+    const box = $('#lock');
+    if (!box) return;
+    const input = el('input', { type: 'password', id: 'lock-code', autocomplete: 'current-password', 'aria-label': 'Group code', placeholder: 'Group code' });
+    const btn = el('button', { class: 'btn btn-primary btn-big', type: 'submit' }, 'Open');
+    const form = el('form', { class: 'lock-form' }, input, btn);
+    const opening = message === 'Opening…';
+    if (opening) { input.disabled = true; btn.disabled = true; }
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const v = input.value.trim();
+      if (!v) { input.focus(); return; }
+      btn.disabled = true;
+      btn.textContent = 'Opening…';
+      await unlock(v, false);
+    });
+    fill(box,
+      el('p', { class: 'next-kicker' }, el('span', null, 'Members only')),
+      el('h2', { class: 'next-title' }, 'Enter the group code'),
+      el('p', { class: 'muted' }, 'The schedule, papers, vote and chat are for group members. Ask an organizer for the code. This device remembers it.'),
+      form,
+      message ? el('p', { class: opening ? 'muted' : 'form-error', 'aria-live': 'polite' }, message) : null);
+  }
+
+  // ---- answers (vote and proposals)
 
   function validRow(r) {
     return !!r && typeof r.survey === 'string' && typeof r.key === 'string' && !!r.answers && typeof r.answers === 'object';
@@ -317,7 +466,7 @@
 
   function onBackendChange(statusChanged) {
     if (statusChanged) {
-      try { renderNext(); renderEditButtons(); } catch (e) { console.error(e); }
+      try { renderNext(); renderEditButtons(); renderChat(); renderFooter(); } catch (e) { console.error(e); }
     }
     if (!S.survey) return;
     if (statusChanged && !S.formDirty) { renderSurveyPanel(); return; }
@@ -351,10 +500,92 @@
       return;
     }
     if (B.kind === 'sheet') {
-      await sheetPost(row);
+      await sheetPost(Object.assign({ kind: 'answer' }, row));
       B.rows = (B.rows || []).concat([row]);
       onBackendChange(false);
       setTimeout(loadSheet, 2000);
+      return;
+    }
+    throw new Error('not connected');
+  }
+
+  async function deleteAnswers(sv, key) {
+    if (B.kind === 'artifact') {
+      const ids = (B.rows || []).filter((r) => r.survey === sv.id && r.key === key && r._id).map((r) => r._id);
+      for (const id of ids) await B.db.collection('votes').doc(id).delete();
+      return;
+    }
+    if (B.kind === 'sheet') {
+      await sheetPost({ kind: 'response', action: 'delete', survey: sv.id, key });
+      B.rows = (B.rows || []).filter((r) => !(r.survey === sv.id && r.key === key));
+      onBackendChange(false);
+      return;
+    }
+    throw new Error('not connected');
+  }
+
+  // ---- members
+
+  function applyMembers() {
+    S.members = S.remoteMembers
+      ? S.remoteMembers.map((n) => ({ id: slug(n) || n, name: n, role: 'member' }))
+      : (S.baseMembers || []);
+    S.membersById = Object.fromEntries(S.members.map((m) => [m.id, m]));
+  }
+
+  function setRemoteMembers(names) {
+    const clean = Array.isArray(names)
+      ? Array.from(new Set(names.filter((n) => typeof n === 'string').map((n) => n.trim().slice(0, 80)).filter(Boolean))).slice(0, 200)
+      : null;
+    const sig = JSON.stringify(clean);
+    if (sig === S.membersSig) return;
+    S.membersSig = sig;
+    S.remoteMembers = clean;
+    applyMembers();
+    try {
+      renderPeople();
+      renderChatForm();
+      if (!S.formDirty) renderSurveyPanel();
+    } catch (e) { console.error(e); }
+  }
+
+  async function saveMembers(names) {
+    if (B.kind === 'artifact') { await B.db.doc('site/members').set({ names }); return; }
+    if (B.kind === 'sheet') { await sheetPost({ kind: 'members', names }); setRemoteMembers(names); return; }
+    throw new Error('not connected');
+  }
+
+  // ---- chat
+
+  function setChat(list) {
+    const clean = (list || [])
+      .filter((m) => m && typeof m.text === 'string' && m.text.trim())
+      .map((m) => ({ id: String(m.id || ''), at: String(m.at || ''), name: typeof m.name === 'string' ? m.name.slice(0, 80) : '', text: m.text.slice(0, 2000) }))
+      .sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+    const sig = JSON.stringify(clean);
+    if (sig === S.chatSig) return;
+    S.chatSig = sig;
+    S.chat = clean;
+    renderChatList();
+  }
+
+  async function sendChat(name, text) {
+    const m = { name, text: text.slice(0, 1000), at: new Date().toISOString() };
+    if (B.kind === 'artifact') { await B.db.collection('chat').add(m); return; }
+    if (B.kind === 'sheet') {
+      const out = await sheetPost(Object.assign({ kind: 'chat' }, m));
+      setChat((S.chat || []).concat([Object.assign({ id: (out && out.id) || 'tmp-' + Date.now() }, m)]));
+      setTimeout(loadSheet, 1500);
+      return;
+    }
+    throw new Error('not connected');
+  }
+
+  async function deleteChat(id) {
+    if (B.kind === 'artifact') { await B.db.collection('chat').doc(id).delete(); return; }
+    if (B.kind === 'sheet') {
+      await sheetPost({ kind: 'chat-delete', id });
+      setChat((S.chat || []).filter((m) => m.id !== id));
       return;
     }
     throw new Error('not connected');
@@ -481,6 +712,7 @@
 
   function renderRoadmap(animate) {
     const canvas = $('#roadmap');
+    if (!canvas) return;
     canvas.replaceChildren();
     const availW = canvas.clientWidth || 640;
     const availH = canvas.clientHeight || 0;
@@ -649,6 +881,7 @@
   // ------------------------------------------------------------------ about
 
   function renderAbout() {
+    if (!$('#scope-intro')) return;
     const c = S.config;
     const scope = c.scope || {};
     $('#scope-intro').textContent = scope.intro || '';
@@ -1051,7 +1284,9 @@
     }
     $('#organizers').replaceChildren(...(orgs.length ? orgs.map((m) => personCard(m, true)) : [el('li', { class: 'muted' }, 'Organizers will be listed here.')]));
     $('#participants').replaceChildren(...(rest.length ? rest.map((m) => personCard(m, false)) : [el('li', { class: 'muted' }, 'Participants will be listed here.')]));
-    if (S.config.contactEmail) {
+    renderMembersButton();
+    if (S.config.contactEmail && !S.contactShown) {
+      S.contactShown = true;
       $('#organizer-note').append(' ', el('a', { href: 'mailto:' + S.config.contactEmail }, S.config.contactEmail));
     }
   }
@@ -1165,7 +1400,7 @@
     }
     if (surveyClosed(sv)) panel.append(el('p', { class: 'muted' }, 'This is closed. Thanks to everyone who answered.'));
     else panel.append(buildForm(sv));
-    if (sv.showResults !== false || (B.kind === 'artifact' && B.canEdit)) {
+    if (sv.showResults !== false || isOrganizer()) {
       const res = el('section', { class: 'results', 'aria-label': 'Results' });
       panel.append(res);
       renderResults(sv, res);
@@ -1333,6 +1568,7 @@
 
   function blockedReason() {
     if (B.kind === 'pending') return 'Connecting…';
+    if (B.kind === 'sheet' && !S.access) return 'Enter the group code at the top of the page to vote.';
     if (B.kind === 'none') return 'Answers can\'t be saved yet. Organizers: follow "Connect voting" in the README.';
     if (B.kind === 'artifact') {
       if (B.status === 'loading') return 'Connecting…';
@@ -1477,16 +1713,21 @@
     const rows = latestRows(sv);
     head.append(el('span', { class: 'muted small' },
       plural(rows.length, 'answer') + (editorsOnly ? ', shown to editors only' : ''),
-      B.kind === 'sheet' ? [' ', el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => { B.status = 'loading'; loadSheet(); } }, 'Refresh')] : (rows.length ? ', updating live' : '')));
+      B.kind === 'sheet' ? [' ', el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => loadSheet() }, 'Refresh')] : (rows.length ? ', updating live' : ''),
+      isOrganizer() && rows.length ? [' ', el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => { S.manage = !S.manage; renderResults(sv, box); } }, S.manage ? 'Done' : 'Manage answers')] : null));
     if (B.status === 'timeout' || B.status === 'cached') box.append(el('p', { class: 'muted small' }, 'These may be out of date while the connection catches up.'));
-    if (editorsOnly || sv.resultsStyle === 'list') renderResponseList(sv, box, rows);
+    if (S.manage && isOrganizer()) renderResponseList(sv, box, rows, true);
+    else if (editorsOnly || sv.resultsStyle === 'list') renderResponseList(sv, box, rows, false);
     else renderSummary(sv, box, rows);
   }
 
-  function renderResponseList(sv, box, rows) {
+  function renderResponseList(sv, box, rows, manage) {
+    const note = el('div', { 'aria-live': 'polite' });
+    if (manage) box.append(el('p', { class: 'muted small' }, 'Deleting removes that person\'s answer for good.'), note);
     if (!rows.length) { box.append(el('p', { class: 'muted' }, sv.emptyText || 'No answers yet.')); return; }
     box.append(el('ul', { class: 'response-list' }, rows.map((r) => el('li', null,
-      el('p', { class: 'response-date' }, r.at ? fmtDate(new Date(r.at), { day: 'numeric', month: 'short', year: 'numeric' }) : ''),
+      el('p', { class: 'response-date' }, r.at ? fmtDate(new Date(r.at), { day: 'numeric', month: 'short', year: 'numeric' }) : '',
+        manage ? twoTapButton('Delete', () => deleteAnswers(sv, r.key), (err) => note.replaceChildren(el('p', { class: 'form-error' }, editError(err)))) : null),
       el('dl', { class: 'facts' }, (sv.questions || []).map((q) => {
         const v = r.answers[q.id];
         const text = Array.isArray(v) ? v.join(', ') : v == null ? '' : String(v);
@@ -1617,13 +1858,10 @@
       try { f(); } catch (e) { console.error(e); }
     }
     const d = $('#schedule-editor');
-    if (d && d.open && !S.editId) renderEditor();
+    if (d && d.open && !S.editId && S.dialogMode === 'schedule') renderEditor();
   }
 
-  function canEditSchedule() {
-    if (B.kind === 'sheet') return true;
-    return B.kind === 'artifact' && !!B.db && B.canEdit;
-  }
+  function canEditSchedule() { return isOrganizer(); }
 
   function renderEditButtons() {
     const head = $('#schedule .section-head');
@@ -1640,38 +1878,13 @@
 
   // ---- saving
 
-  async function sheetPost(payload) {
-    const opts = { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) };
-    let res;
-    try {
-      res = await fetch(S.config.voteUrl, opts);
-    } catch (e) {
-      if (!(e instanceof TypeError)) throw e;
-      // Some browsers block reading Google's reply; send it without reading the reply.
-      await fetch(S.config.voteUrl, Object.assign({}, opts, { mode: 'no-cors' }));
-      return { ok: true, unverified: true };
-    }
-    const out = await res.json().catch(() => null);
-    if (out && out.ok === false) {
-      const err = new Error(out.error || 'The sheet refused the change.');
-      err.code = out.code;
-      throw err;
-    }
-    return out || { ok: true, unverified: true };
-  }
-
-  function organizerCode() {
-    if (S.orgCode != null) return S.orgCode;
-    try { return localStorage.getItem('rg-code') || ''; } catch (e) { return ''; }
-  }
-
   async function saveSession(sess) {
     if (B.kind === 'artifact') {
       await B.db.collection('sessions').doc(sess.id).set(sess);
       return;
     }
     if (B.kind === 'sheet') {
-      await sheetPost({ kind: 'session', action: 'save', code: organizerCode(), session: sess });
+      await sheetPost({ kind: 'session', action: 'save', session: sess });
       setRemoteSessions((S.remoteSessions || []).filter((x) => x.id !== sess.id).concat([sess]));
       setTimeout(loadSheet, 2000);
       return;
@@ -1686,7 +1899,7 @@
       return;
     }
     if (B.kind === 'sheet') {
-      await sheetPost({ kind: 'session', action: 'delete', code: organizerCode(), id: s.id });
+      await sheetPost({ kind: 'session', action: 'delete', id: s.id });
       setRemoteSessions((S.remoteSessions || []).filter((x) => x.id !== s.id));
       setTimeout(loadSheet, 2000);
       return;
@@ -1696,8 +1909,8 @@
 
   function editError(err) {
     const c = err && err.code;
-    if (c === 'bad_code') return 'That organizer code isn\'t right.';
-    if (c === 'no_code_set') return 'Set ORGANIZER_CODE in your Google script first. The README explains how.';
+    if (c === 'bad_code') return 'Only organizers can do this. Lock the site (link at the bottom) and open it again with the organizer code.';
+    if (c === 'no_code_set') return 'Set GROUP_CODE and ORGANIZER_CODE in your Google script first. The README explains how.';
     if (c === 'invalid_argument') return 'Only the page owner and editors can change the schedule.';
     if (/Missing form/i.test((err && err.message) || '')) return 'Your Google script is the old version. Update it (see the README) to edit the schedule here.';
     return 'Couldn\'t save. Check your connection and try again.';
@@ -1716,6 +1929,7 @@
   }
 
   function openEditor(id) {
+    S.dialogMode = 'schedule';
     S.editId = id;
     S.editorMsg = null;
     const d = editorDialog();
@@ -1736,22 +1950,8 @@
         el('h2', { id: 'editor-title' }, showForm ? (editing ? 'Edit session' : 'Add a session') : 'Schedule'),
         el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => d.close() }, 'Close')),
       el('div', { class: 'editor-body' },
-        B.kind === 'sheet' ? codeField() : null,
         msg,
         showForm ? sessionForm(editing, msg) : sessionList(msg)));
-  }
-
-  function codeField() {
-    const input = el('input', { type: 'password', id: 'org-code', autocomplete: 'off' });
-    input.value = organizerCode();
-    input.addEventListener('input', () => {
-      S.orgCode = input.value;
-      try { localStorage.setItem('rg-code', input.value); } catch (e) { /* storage unavailable */ }
-    });
-    return el('label', { class: 'q code-field', for: 'org-code' },
-      el('span', { class: 'q-label' }, 'Organizer code'),
-      input,
-      el('span', { class: 'hint' }, 'The code you set in the Google script. This browser remembers it.'));
   }
 
   function sessionList(msg) {
@@ -1934,6 +2134,197 @@
     return form;
   }
 
+  // ------------------------------------------------------------------ chat, members, organizer tools
+
+  function twoTapButton(label, action, onError) {
+    const btn = el('button', { class: 'btn btn-quiet danger', type: 'button' }, label);
+    let armed = false;
+    let timer;
+    btn.addEventListener('click', async () => {
+      if (!armed) {
+        armed = true;
+        btn.textContent = 'Tap again to delete';
+        timer = setTimeout(() => { armed = false; btn.textContent = label; }, 3000);
+        return;
+      }
+      clearTimeout(timer);
+      btn.disabled = true;
+      btn.textContent = 'Deleting…';
+      try {
+        await action();
+      } catch (err) {
+        armed = false;
+        btn.disabled = false;
+        btn.textContent = label;
+        if (onError) onError(err);
+      }
+    });
+    return btn;
+  }
+
+  function linkify(text) {
+    const parts = [];
+    const re = /https:\/\/[^\s<>"']+/g;
+    let last = 0;
+    let m;
+    while ((m = re.exec(text))) {
+      const url = m[0].replace(/[.,;:!?)]+$/, '');
+      if (m.index > last) parts.push(text.slice(last, m.index));
+      parts.push(el('a', { href: url, target: '_blank', rel: 'noopener' }, url));
+      last = m.index + url.length;
+      re.lastIndex = last;
+    }
+    if (last < text.length) parts.push(text.slice(last));
+    return parts;
+  }
+
+  function chatBlocked() {
+    if (B.kind === 'none') return 'Chat isn\'t switched on yet.';
+    if (B.kind === 'pending' || B.status === 'loading') return 'Connecting…';
+    if (B.kind === 'sheet' && !S.access) return 'Enter the group code at the top of the page to chat.';
+    if (B.kind === 'artifact' && (B.status === 'unavailable' || B.status === 'error' || B.status === 'timeout')) return 'Chat needs the page opened on claude.ai while signed in.';
+    if (B.kind === 'artifact' && B.canWrite === false) return 'You can read the chat but not post. Ask the page owner for Contributor access.';
+    return null;
+  }
+
+  function renderChat() {
+    renderChatList();
+    renderChatForm();
+  }
+
+  function renderChatList() {
+    const list = $('#chat-list');
+    if (!list) return;
+    const nearBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+    const msgs = S.chat || [];
+    if (!msgs.length) {
+      list.replaceChildren(el('li', { class: 'chat-empty' }, 'No messages yet. Say hello, share a paper, or ask a question.'));
+      return;
+    }
+    const manage = isOrganizer();
+    const note = $('#chat-note');
+    let lastDay = '';
+    const items = [];
+    for (const m of msgs) {
+      const d = m.at ? new Date(m.at) : null;
+      const ok = d && !isNaN(d);
+      const day = ok ? fmtDate(d, { weekday: 'long', day: 'numeric', month: 'long' }) : '';
+      if (day && day !== lastDay) { items.push(el('li', { class: 'chat-day' }, day)); lastDay = day; }
+      items.push(el('li', { class: 'chat-msg' },
+        el('p', { class: 'chat-meta' },
+          el('strong', null, m.name || 'Someone'),
+          ok ? el('span', null, fmtTime(d)) : null,
+          manage && m.id && !m.id.startsWith('tmp-') ? twoTapButton('Delete', () => deleteChat(m.id), (err) => {
+            if (note) { note.className = 'chat-note form-error'; note.textContent = editError(err); }
+          }) : null),
+        el('p', { class: 'chat-text' }, linkify(m.text))));
+    }
+    list.replaceChildren(...items);
+    if (nearBottom || !S.chatScrolled) {
+      list.scrollTop = list.scrollHeight;
+      S.chatScrolled = true;
+    }
+  }
+
+  function renderChatForm() {
+    const form = $('#chat-form');
+    if (!form) return;
+    const names = memberNames();
+    const blocked = chatBlocked();
+    const nameField = names.length
+      ? el('select', { id: 'chat-name', 'aria-label': 'Your name' }, el('option', { value: '' }, 'Your name…'), names.map((n) => el('option', { value: n }, n)))
+      : el('input', { type: 'text', id: 'chat-name', placeholder: 'Your name', 'aria-label': 'Your name', autocomplete: 'name' });
+    const saved = recallName();
+    if (saved && (!names.length || names.includes(saved))) nameField.value = saved;
+    const text = el('textarea', { id: 'chat-text', rows: 2, maxlength: 1000, placeholder: 'Write a message…', 'aria-label': 'Message' });
+    text.value = S.chatDraft || '';
+    text.addEventListener('input', () => { S.chatDraft = text.value; });
+    text.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); }
+    });
+    const send = el('button', { class: 'btn btn-primary', type: 'submit' }, 'Send');
+    const note = el('p', { class: 'chat-note' + (blocked ? ' muted' : ''), id: 'chat-note', 'aria-live': 'polite' }, blocked || 'Ctrl+Enter sends. Everyone in the group can read the chat.');
+    if (blocked) { send.disabled = true; text.disabled = true; }
+    fill(form, el('div', { class: 'chat-fields' }, nameField, text, send), note);
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      if (send.disabled) return;
+      const name = nameField.value.trim();
+      const t = text.value.trim();
+      if (!name) { note.className = 'chat-note form-error'; note.textContent = 'Choose your name first.'; nameField.focus(); return; }
+      if (!t) { text.focus(); return; }
+      send.disabled = true;
+      send.textContent = 'Sending…';
+      try {
+        await sendChat(name, t);
+        rememberName(name);
+        text.value = '';
+        S.chatDraft = '';
+        note.className = 'chat-note';
+        note.textContent = 'Sent.';
+        const list = $('#chat-list');
+        if (list) list.scrollTop = list.scrollHeight;
+      } catch (err) {
+        note.className = 'chat-note form-error';
+        note.textContent = err && err.code === 'bad_code'
+          ? 'Your code no longer works. Reload the page and enter the group code.'
+          : 'Couldn\'t send. Check your connection and try again.';
+      }
+      send.disabled = false;
+      send.textContent = 'Send';
+    };
+    const actions = $('#chat-actions');
+    if (actions) {
+      fill(actions, B.kind === 'sheet' && S.access
+        ? el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => loadSheet() }, 'Refresh')
+        : null);
+    }
+  }
+
+  function renderMembersButton() {
+    const slot = $('#people-actions');
+    if (!slot) return;
+    fill(slot, isOrganizer()
+      ? el('button', { class: 'btn', type: 'button', onclick: openMembersEditor }, 'Edit members')
+      : null);
+  }
+
+  function openMembersEditor() {
+    S.dialogMode = 'members';
+    S.editId = null;
+    const d = editorDialog();
+    const ta = el('textarea', { id: 'members-text', rows: 12 });
+    ta.value = memberNames().join('\n');
+    const msg = el('div', { class: 'editor-msg', 'aria-live': 'polite' });
+    const save = el('button', { class: 'btn btn-primary btn-big', type: 'submit' }, 'Save members');
+    const form = el('form', { class: 'survey-form editor-form', novalidate: true },
+      el('label', { class: 'q', for: 'members-text' },
+        el('span', { class: 'q-label' }, 'One name per line'),
+        el('span', { class: 'hint' }, 'These names appear in the member list and in the name menus for voting and chat.'),
+        ta),
+      el('div', { class: 'button-row' }, save, el('button', { class: 'btn', type: 'button', onclick: () => d.close() }, 'Close')));
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const names = ta.value.split('\n').map((x) => x.trim()).filter(Boolean);
+      save.disabled = true;
+      save.textContent = 'Saving…';
+      try {
+        await saveMembers(names);
+        msg.replaceChildren(el('p', { class: 'form-done' }, 'Saved ' + plural(names.length, 'member') + '.'));
+      } catch (err) {
+        msg.replaceChildren(el('p', { class: 'form-error' }, editError(err)));
+      }
+      save.disabled = false;
+      save.textContent = 'Save members';
+    });
+    fill(d,
+      el('div', { class: 'editor-bar' },
+        el('h2', { id: 'editor-title' }, 'Members'),
+        el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => d.close() }, 'Close')),
+      el('div', { class: 'editor-body' }, msg, form));
+    if (!d.open) d.showModal();
+  }
+
   // ------------------------------------------------------------------ footer
 
   function renderFooter() {
@@ -1942,10 +2333,13 @@
     if (c.labUrl) links.push(el('a', { href: c.labUrl, target: '_blank', rel: 'noopener' }, c.labName || 'Lab'));
     if (S.repo) {
       links.push(el('a', { href: 'https://github.com/' + S.repo.owner + '/' + S.repo.repo, target: '_blank', rel: 'noopener' }, 'GitHub repository'));
-      links.push(el('a', { href: 'https://github.com/' + S.repo.owner + '/' + S.repo.repo + '/edit/' + S.repo.branch + '/data/sessions.json', target: '_blank', rel: 'noopener' }, 'Edit the schedule'));
     }
     if (S.feedUrl) links.push(el('a', { href: S.feedUrl }, 'Calendar feed'));
     if (c.contactEmail) links.push(el('a', { href: 'mailto:' + c.contactEmail }, 'Contact'));
+    if (B.kind === 'sheet' && S.access) {
+      links.push(el('button', { class: 'btn btn-quiet footer-lock', type: 'button', onclick: () => lockDevice('Locked. Enter the code to open the site again.') },
+        isOrganizer() ? 'Lock this device (organizer)' : 'Lock this device'));
+    }
     links.push(el('a', { href: '#top' }, 'Back to top'));
     if (c.sampleNote) $('#sample-note').textContent = c.sampleNote;
     $('#footer-links').replaceChildren(...links.map((a) => el('li', null, a)));
