@@ -32,11 +32,11 @@
       </a>
       <nav class="site-nav" aria-label="Sections">
         <ul>
-          <li><a href="#about">About</a></li>
+          <li><a href="#surveys">Vote</a></li>
           <li><a href="#schedule">Schedule</a></li>
           <li><a href="#papers">Papers</a></li>
-          <li><a href="#people">People</a></li>
-          <li><a href="#surveys">Vote</a></li>
+          <li><a href="#people">Members</a></li>
+          <li><a href="#about">About</a></li>
           <li class="nav-external" hidden><a id="nav-lab" href="#" target="_blank" rel="noopener">Lab</a></li>
         </ul>
       </nav>
@@ -74,26 +74,12 @@
       </div>
     </section>
 
-    <section class="section" id="about" aria-labelledby="about-title">
+    <section class="section" id="surveys" aria-labelledby="surveys-title">
       <div class="wrap">
-        <h2 class="section-title" id="about-title">About the group</h2>
-        <div class="about-grid">
-          <div class="about-col">
-            <h3>What we read</h3>
-            <p id="scope-intro"></p>
-            <ul class="topic-list" id="scope-topics"></ul>
-          </div>
-          <div class="about-col">
-            <h3>How a session works</h3>
-            <ol class="format-list" id="format"></ol>
-            <p class="format-note" id="format-note" hidden></p>
-          </div>
-          <div class="about-col">
-            <h3>Taking part</h3>
-            <p id="participation"></p>
-            <dl class="tracks" id="tracks"></dl>
-            <div class="button-row" id="participate-actions"></div>
-          </div>
+        <h2 class="section-title" id="surveys-title">Vote</h2>
+        <div class="survey-layout">
+          <div class="survey-tabs" id="survey-tabs" role="tablist" aria-label="Vote"></div>
+          <div class="survey-panel" id="survey-panel" role="tabpanel"></div>
         </div>
       </div>
     </section>
@@ -139,7 +125,7 @@
 
     <section class="section" id="people" aria-labelledby="people-title">
       <div class="wrap">
-        <h2 class="section-title" id="people-title">People</h2>
+        <h2 class="section-title" id="people-title">Members</h2>
         <div class="people-block">
           <div class="people-intro">
             <h3>Organizers</h3>
@@ -157,12 +143,26 @@
       </div>
     </section>
 
-    <section class="section" id="surveys" aria-labelledby="surveys-title">
+    <section class="section" id="about" aria-labelledby="about-title">
       <div class="wrap">
-        <h2 class="section-title" id="surveys-title">Vote and forms</h2>
-        <div class="survey-layout">
-          <div class="survey-tabs" id="survey-tabs" role="tablist" aria-label="Vote and forms"></div>
-          <div class="survey-panel" id="survey-panel" role="tabpanel"></div>
+        <h2 class="section-title" id="about-title">About the group</h2>
+        <div class="about-grid">
+          <div class="about-col">
+            <h3>What we read</h3>
+            <p id="scope-intro"></p>
+            <ul class="topic-list" id="scope-topics"></ul>
+          </div>
+          <div class="about-col">
+            <h3>How a session works</h3>
+            <ol class="format-list" id="format"></ol>
+            <p class="format-note" id="format-note" hidden></p>
+          </div>
+          <div class="about-col">
+            <h3>Taking part</h3>
+            <p id="participation"></p>
+            <dl class="tracks" id="tracks"></dl>
+            <div class="button-row" id="participate-actions"></div>
+          </div>
         </div>
       </div>
     </section>

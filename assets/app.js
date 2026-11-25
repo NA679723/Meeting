@@ -111,7 +111,7 @@
     return statusOf(s) === 'past' ? 'past' : 'upcoming';
   }
   function trackInfo(id) {
-    if (!id) return null;
+    if (!id || !(S.config.tracks || []).length) return null;
     const tracks = S.config.tracks || [];
     const i = tracks.findIndex((t) => t.id === id);
     const shapes = ['circle', 'square'];
@@ -120,7 +120,8 @@
   }
   function trackIcon(id) {
     const t = trackInfo(id);
-    return el('span', { class: 'track-icon ' + (t ? t.shape : 'circle'), 'aria-hidden': 'true' });
+    if (!t || !(S.config.tracks || []).length) return null;
+    return el('span', { class: 'track-icon ' + t.shape, 'aria-hidden': 'true' });
   }
   function personName(id) { return (S.membersById[id] || { name: id }).name; }
   function filteredSessions() {
@@ -194,13 +195,13 @@
       const [config, sessions, papers, members, surveys] =
         await Promise.all(['config', 'sessions', 'papers', 'members', 'surveys'].map(loadJSON));
       S.config = config || {};
-      S.papers = papers || [];
+      S.basePapers = papers || [];
+      S.baseSessions = sessions || [];
+      S.remoteSessions = [];
       S.members = members || [];
       S.surveys = surveys || [];
-      S.papersById = Object.fromEntries(S.papers.map((p) => [p.id, p]));
       S.membersById = Object.fromEntries(S.members.map((m) => [m.id, m]));
-      S.sessions = Core.prepareSessions(sessions, S.config);
-      S.next = S.sessions.find((s) => s.endDate >= S.now) || null;
+      rebuildData();
       S.repo = detectRepo(S.config);
       const ref = S.next ? S.next.startDate : S.now;
       const p = Core.tzParts(ref, TZ());
@@ -212,7 +213,7 @@
 
     const steps = [bindText, setupPdfDialog, renderNext, () => renderRoadmap(true), renderAbout, renderTrackFilter,
       renderCalendar, renderAgenda, setupCalendarActions, renderPaperToolbar, renderPapers,
-      renderPeople, renderSurveyTabs, renderFooter];
+      renderPeople, renderSurveyTabs, renderFooter, renderEditButtons];
     for (const step of steps) {
       try { step(); } catch (err) { console.error(err); }
     }
@@ -259,6 +260,9 @@
         }
         if (!db) { clearTimeout(timer); B.status = 'unavailable'; onBackendChange(true); return; }
         B.db = db;
+        db.collection('sessions').onSnapshot((snap) => {
+          setRemoteSessions(snap.docs.map((d) => Object.assign({ id: d.id }, d.data() || {})));
+        }, () => { /* schedule edits unavailable; sessions.json still shows */ });
         db.collection('votes').onSnapshot((snap) => {
           B.rows = snap.docs.map((d) => d.data() || {}).filter(validRow);
           const before = B.status;
@@ -298,6 +302,7 @@
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const body = await res.json();
       B.rows = (body.rows || []).filter(validRow);
+      if (Array.isArray(body.sessions)) setRemoteSessions(body.sessions);
       B.status = 'ready';
     } catch (e) {
       B.status = 'error';
@@ -311,6 +316,9 @@
   }
 
   function onBackendChange(statusChanged) {
+    if (statusChanged) {
+      try { renderNext(); renderEditButtons(); } catch (e) { console.error(e); }
+    }
     if (!S.survey) return;
     if (statusChanged && !S.formDirty) { renderSurveyPanel(); return; }
     const box = $('#survey-panel .results');
@@ -343,17 +351,7 @@
       return;
     }
     if (B.kind === 'sheet') {
-      const body = JSON.stringify(row);
-      const opts = { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body };
-      try {
-        const res = await fetch(S.config.voteUrl, opts);
-        const out = await res.json().catch(() => ({ ok: true }));
-        if (out && out.ok === false) throw new Error(out.error || 'The sheet refused the answer.');
-      } catch (e) {
-        if (!(e instanceof TypeError)) throw e;
-        // Some browsers block reading Google's reply; send it without reading the reply.
-        await fetch(S.config.voteUrl, Object.assign({}, opts, { mode: 'no-cors' }));
-      }
+      await sheetPost(row);
       B.rows = (B.rows || []).concat([row]);
       onBackendChange(false);
       setTimeout(loadSheet, 2000);
@@ -390,9 +388,11 @@
   // ------------------------------------------------------------------ next session
 
   function citation(p) {
+    const href = p.url || p.pdf;
+    const meta = [p.authors ? shortAuthors(p.authors) + (p.year ? ' (' + p.year + ')' : '') : String(p.year || ''), p.venue].filter(Boolean).join('. ');
     return el('li', null,
-      el('a', { class: 'citation-title', href: p.url || p.pdf || '#', target: '_blank', rel: 'noopener' }, p.title),
-      el('span', { class: 'citation-meta' }, shortAuthors(p.authors) + ' (' + p.year + ')' + (p.venue ? '. ' + p.venue : ''))
+      href ? el('a', { class: 'citation-title', href, target: '_blank', rel: 'noopener' }, p.title) : el('span', { class: 'citation-title' }, p.title),
+      meta ? el('span', { class: 'citation-meta' }, meta) : null
     );
   }
 
@@ -436,7 +436,8 @@
         el('h2', { class: 'next-title' }, 'Nothing scheduled yet'),
         el('p', { class: 'muted' }, 'The next block is being planned. Vote for the topics and meeting times that suit you.'),
         el('div', { class: 'button-row' },
-          hasTopic ? el('a', { class: 'btn btn-primary', href: '#survey-vote' }, 'Vote on topics and times') : null,
+          canEditSchedule() ? el('button', { class: 'btn btn-primary', type: 'button', onclick: () => openEditor('new') }, 'Add a session') : null,
+          hasTopic ? el('a', { class: canEditSchedule() ? 'btn' : 'btn btn-primary', href: '#survey-vote' }, 'Vote on topics and times') : null,
           el('a', { class: 'btn', href: '#survey-' + ((S.config.participation || {}).presentSurveyId || 'present') }, 'Volunteer to present'))
       );
       return;
@@ -469,7 +470,10 @@
       (s.questions || []).length ? el('details', { class: 'next-questions' },
         el('summary', null, 'Discussion questions (' + s.questions.length + ')'),
         el('ul', { class: 'question-list' }, s.questions.map((q) => el('li', null, q)))) : null,
-      sessionActions(s, true)
+      sessionActions(s, true),
+      canEditSchedule() ? el('p', { class: 'edit-link' },
+        el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => openEditor(s.id) }, 'Edit this session'),
+        el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => openEditor('new') }, 'Add a session')) : null
     );
   }
 
@@ -656,6 +660,7 @@
     note.hidden = !fmt.note;
     const part = c.participation || {};
     $('#participation').textContent = part.intro || '';
+    $('#tracks').hidden = !(c.tracks || []).length;
     $('#tracks').replaceChildren(...(c.tracks || []).map((t) =>
       el('div', null, trackIcon(t.id), el('dt', null, t.name + ' track'), el('dd', null, t.description || ''))));
     const actions = $('#participate-actions');
@@ -700,6 +705,7 @@
     const shift = (delta) => {
       const d = new Date(Date.UTC(y, m - 1 + delta, 1));
       S.cal = { y: d.getUTCFullYear(), m: d.getUTCMonth() + 1 };
+      S.calTouched = true;
       renderCalendar();
       $('#calendar .cal-nav button[data-dir="' + (delta < 0 ? 'prev' : 'next') + '"]').focus();
     };
@@ -883,6 +889,8 @@
   }
 
   function renderPaperToolbar() {
+    $('#paper-status').hidden = true;
+    $('#paper-tag').closest('label').hidden = true;
     const statuses = [['all', 'All'], ['scheduled', 'Scheduled'], ['discussed', 'Discussed'], ['backlog', 'Not yet scheduled']];
     const seg = $('#paper-status');
     seg.replaceChildren(...statuses.map(([id, name]) => el('button', {
@@ -912,7 +920,7 @@
   function renderPapers() {
     const f = S.paperFilter;
     const none = !S.papers.length;
-    $('.paper-toolbar').hidden = none;
+    $('.paper-toolbar').hidden = none || S.papers.length < 6;
     $('#paper-count').hidden = none;
     if (none) {
       $('#paper-list').replaceChildren(el('li', { class: 'empty' }, 'No papers have been added yet.'));
@@ -953,7 +961,7 @@
         : st.kind === 'discussed' ? ['Discussed in ', sessionLink] : 'Not yet scheduled';
       return el('li', { class: 'paper' },
         el('div', null,
-          el('h3', { class: 'paper-title' }, el('a', { href: p.url || p.pdf || '#', target: '_blank', rel: 'noopener' }, p.title)),
+          el('h3', { class: 'paper-title' }, p.url || p.pdf ? el('a', { href: p.url || p.pdf, target: '_blank', rel: 'noopener' }, p.title) : p.title),
           el('p', { class: 'paper-authors' }, p.authors),
           el('p', { class: 'paper-venue' }, [p.venue, p.year].filter(Boolean).join(', ')),
           (p.tags || []).length ? el('ul', { class: 'tag-list', 'aria-label': 'Tags' }, p.tags.map((t) => el('li', null,
@@ -964,8 +972,8 @@
         el('div', { class: 'paper-side' },
           el('p', { class: 'paper-status ' + st.kind }, status),
           el('div', { class: 'paper-actions' },
-            p.pdf ? pdfControl(p, 'btn', 'Read PDF') : null,
-            p.url ? el('a', { class: 'btn btn-quiet', href: p.url, target: '_blank', rel: 'noopener' }, 'Paper page') : null)));
+            p.pdf ? pdfControl(p, 'btn', p.derived ? 'Open' : 'Read PDF') : null,
+            p.url && !p.derived ? el('a', { class: 'btn btn-quiet', href: p.url, target: '_blank', rel: 'noopener' }, 'Paper page') : null)));
     }));
   }
 
@@ -1062,7 +1070,7 @@
     return c ? 'Open until ' + fmtDate(c, { day: 'numeric', month: 'short' }) : 'Open';
   }
   function resolveOptions(q) {
-    if (q.type === 'grid') return (q.rows || []).flatMap((r) => (q.columns || []).map((c) => r + ' ' + c));
+    if (q.type === 'grid') return gridRows(q).flatMap((r) => (q.columns || []).map((c) => r.label + ' ' + c));
     if (Array.isArray(q.options)) return q.options;
     if (typeof q.options === 'string' && q.options.startsWith('sessions')) {
       const which = q.options.split(':')[1] || 'all';
@@ -1072,6 +1080,27 @@
         .map((s) => 'Session ' + s.number + ': ' + (s.label || s.title) + ' (' + fmtDate(s.startDate, { day: 'numeric', month: 'short' }) + ')');
     }
     return [];
+  }
+  function gridRows(q) {
+    if (Array.isArray(q.rows)) return q.rows.map((r) => ({ label: String(r), key: null }));
+    const spec = q.rows || {};
+    const out = [];
+    const m1 = String(spec.from || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    const m2 = String(spec.to || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m1 || !m2) return out;
+    const fmt = new Intl.DateTimeFormat('en-GB', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'UTC' });
+    const end = Date.UTC(+m2[1], +m2[2] - 1, +m2[3]);
+    for (let t = Date.UTC(+m1[1], +m1[2] - 1, +m1[3]); t <= end && out.length < 120; t += 864e5) {
+      const d = new Date(t);
+      const dow = d.getUTCDay();
+      if (spec.weekdays !== false && (dow === 0 || dow === 6)) continue;
+      out.push({ label: fmt.format(d), key: d.toISOString().slice(0, 10), monday: dow === 1 });
+    }
+    return out;
+  }
+  function todayKey() {
+    const p = Core.tzParts(S.now, TZ());
+    return p.y + '-' + String(p.m).padStart(2, '0') + '-' + String(p.d).padStart(2, '0');
   }
   function memberNames() { return S.members.map((m) => m.name).filter(Boolean); }
   function rememberName(n) { try { localStorage.setItem('rg-name', n); } catch (e) { /* storage unavailable */ } }
@@ -1202,17 +1231,22 @@
         return fs;
       }
       case 'grid': {
+        const today = todayKey();
+        const rows = gridRows(q);
         const table = el('table', { class: 'slot-grid' },
           el('thead', null, el('tr', null, el('td'), (q.columns || []).map((c) => el('th', { scope: 'col' }, c)))),
-          el('tbody', null, (q.rows || []).map((r) => el('tr', null,
-            el('th', { scope: 'row' }, r),
-            (q.columns || []).map((c) => el('td', null,
-              el('label', { class: 'slot' },
-                el('input', { type: 'checkbox', name, value: r + ' ' + c, 'aria-label': r + ' ' + c }),
-                el('span', { 'aria-hidden': 'true' }))))))));
+          el('tbody', null, rows.map((r, i) => {
+            const past = !!(r.key && r.key < today);
+            return el('tr', { class: (r.monday && i > 0 ? 'week-start' : '') + (past ? ' past' : '') || null },
+              el('th', { scope: 'row' }, r.label),
+              (q.columns || []).map((c) => el('td', null,
+                el('label', { class: 'slot' },
+                  el('input', { type: 'checkbox', name, value: r.label + ' ' + c, 'aria-label': r.label + ' ' + c, disabled: past }),
+                  el('span', { 'aria-hidden': 'true' })))));
+          })));
         return el('fieldset', { class: 'q', 'data-q': q.id },
           el('legend', null, q.label, req),
-          el('p', { class: 'hint' }, 'Tap every slot you could make most weeks.'),
+          el('p', { class: 'hint' }, q.hint || 'Tap every slot you can make.'),
           el('div', { class: 'slot-wrap' }, table));
       }
       case 'rating': {
@@ -1400,10 +1434,10 @@
     const n = answered.length;
     const table = el('table', { class: 'slot-grid heat' },
       el('thead', null, el('tr', null, el('td'), (q.columns || []).map((c) => el('th', { scope: 'col' }, c)))),
-      el('tbody', null, (q.rows || []).map((r) => el('tr', null,
-        el('th', { scope: 'row' }, r),
+      el('tbody', null, gridRows(q).map((row, i) => el('tr', { class: row.monday && i > 0 ? 'week-start' : null },
+        el('th', { scope: 'row' }, row.label),
         (q.columns || []).map((c) => {
-          const k = r + ' ' + c;
+          const k = row.label + ' ' + c;
           const cnt = counts.get(k) || 0;
           const pct = max ? Math.round(12 + 78 * (cnt / max)) : 0;
           const style = cnt ? 'background:color-mix(in srgb, var(--accent) ' + pct + '%, var(--surface));color:' + (pct > 55 ? 'var(--on-accent)' : 'var(--ink)') : '';
@@ -1495,6 +1529,409 @@
       }
       box.append(block);
     }
+  }
+
+  // ------------------------------------------------------------------ schedule data and editing
+  // Sessions come from data/sessions.json plus sessions saved from the website
+  // (the artifact's database, or the Google Sheet). Saved ones win on the same id;
+  // a saved {id, deleted: true} hides a session from sessions.json.
+
+  const pad2 = (n) => String(n).padStart(2, '0');
+  const httpsOnly = (v) => (typeof v === 'string' && /^https?:\/\//i.test(v) ? v : '');
+
+  function cleanSession(x) {
+    if (!x || typeof x !== 'object' || typeof x.id !== 'string' || !x.id) return null;
+    if (x.deleted) return { id: x.id, deleted: true };
+    const str = (v) => (typeof v === 'string' ? v : '');
+    const arr = (v) => (Array.isArray(v) ? v.filter((i) => typeof i === 'string') : []);
+    return {
+      id: x.id,
+      start: str(x.start),
+      durationMinutes: Number(x.durationMinutes) || undefined,
+      track: str(x.track),
+      label: str(x.label),
+      title: str(x.title) || 'Untitled session',
+      presenters: arr(x.presenters),
+      papers: arr(x.papers),
+      builds_on: arr(x.builds_on),
+      prep: str(x.prep),
+      questions: arr(x.questions),
+      location: str(x.location),
+      meetingLink: httpsOnly(x.meetingLink),
+      slides: httpsOnly(x.slides),
+      recording: httpsOnly(x.recording),
+      reading: Array.isArray(x.reading)
+        ? x.reading.filter((r) => r && typeof r.title === 'string' && r.title.trim()).map((r) => ({ title: r.title.trim(), url: httpsOnly(r.url) }))
+        : []
+    };
+  }
+
+  function rebuildData() {
+    const map = new Map();
+    (S.baseSessions || []).forEach((s, i) => {
+      if (!s || typeof s !== 'object') return;
+      const id = s.id || 'base-' + (i + 1);
+      map.set(id, Object.assign({}, s, { id, _base: true }));
+    });
+    for (const r of S.remoteSessions || []) {
+      if (r.deleted) { map.delete(r.id); continue; }
+      const had = map.get(r.id);
+      map.set(r.id, Object.assign({}, r, { _base: !!(had && had._base), _remote: true }));
+    }
+    const papers = (S.basePapers || []).slice();
+    const ids = new Set(papers.map((p) => p.id));
+    const list = Array.from(map.values()).map((s) => {
+      const extra = [];
+      for (const r of s.reading || []) {
+        const id = 'r-' + slug(r.title).slice(0, 60);
+        if (!ids.has(id)) {
+          ids.add(id);
+          papers.push({ id, title: r.title, authors: '', year: '', venue: '', url: r.url || '', pdf: r.url || '', tags: [], derived: true });
+        }
+        extra.push(id);
+      }
+      return Object.assign({}, s, { papers: Array.from(new Set([].concat(s.papers || [], extra))) });
+    });
+    S.papers = papers;
+    S.papersById = Object.fromEntries(papers.map((p) => [p.id, p]));
+    S.sessions = Core.prepareSessions(list, S.config);
+    S.next = S.sessions.find((s) => s.endDate >= S.now) || null;
+  }
+
+  function setRemoteSessions(list) {
+    const clean = (list || []).map(cleanSession).filter(Boolean);
+    const sig = JSON.stringify(clean);
+    if (sig === S.remoteSig) return;
+    S.remoteSig = sig;
+    S.remoteSessions = clean;
+    rebuildData();
+    rerenderSchedule();
+  }
+
+  function rerenderSchedule() {
+    if (S.next && !S.calTouched) {
+      const p = Core.tzParts(S.next.startDate, TZ());
+      S.cal = { y: p.y, m: p.m };
+    }
+    for (const f of [renderNext, () => renderRoadmap(false), renderCalendar, renderAgenda, setupCalendarActions, renderPapers, renderPeople, renderEditButtons]) {
+      try { f(); } catch (e) { console.error(e); }
+    }
+    const d = $('#schedule-editor');
+    if (d && d.open && !S.editId) renderEditor();
+  }
+
+  function canEditSchedule() {
+    if (B.kind === 'sheet') return true;
+    return B.kind === 'artifact' && !!B.db && B.canEdit;
+  }
+
+  function renderEditButtons() {
+    const head = $('#schedule .section-head');
+    if (!head) return;
+    let slot = $('#schedule-edit');
+    if (!slot) {
+      slot = el('div', { id: 'schedule-edit', class: 'section-actions' });
+      head.insertBefore(slot, $('#calendar-actions'));
+    }
+    fill(slot, canEditSchedule()
+      ? el('button', { class: 'btn btn-primary', type: 'button', onclick: () => openEditor(null) }, 'Edit schedule')
+      : null);
+  }
+
+  // ---- saving
+
+  async function sheetPost(payload) {
+    const opts = { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify(payload) };
+    let res;
+    try {
+      res = await fetch(S.config.voteUrl, opts);
+    } catch (e) {
+      if (!(e instanceof TypeError)) throw e;
+      // Some browsers block reading Google's reply; send it without reading the reply.
+      await fetch(S.config.voteUrl, Object.assign({}, opts, { mode: 'no-cors' }));
+      return { ok: true, unverified: true };
+    }
+    const out = await res.json().catch(() => null);
+    if (out && out.ok === false) {
+      const err = new Error(out.error || 'The sheet refused the change.');
+      err.code = out.code;
+      throw err;
+    }
+    return out || { ok: true, unverified: true };
+  }
+
+  function organizerCode() {
+    if (S.orgCode != null) return S.orgCode;
+    try { return localStorage.getItem('rg-code') || ''; } catch (e) { return ''; }
+  }
+
+  async function saveSession(sess) {
+    if (B.kind === 'artifact') {
+      await B.db.collection('sessions').doc(sess.id).set(sess);
+      return;
+    }
+    if (B.kind === 'sheet') {
+      await sheetPost({ kind: 'session', action: 'save', code: organizerCode(), session: sess });
+      setRemoteSessions((S.remoteSessions || []).filter((x) => x.id !== sess.id).concat([sess]));
+      setTimeout(loadSheet, 2000);
+      return;
+    }
+    throw new Error('not connected');
+  }
+
+  async function removeSession(s) {
+    if (s._base) return saveSession({ id: s.id, deleted: true });
+    if (B.kind === 'artifact') {
+      await B.db.collection('sessions').doc(s.id).delete();
+      return;
+    }
+    if (B.kind === 'sheet') {
+      await sheetPost({ kind: 'session', action: 'delete', code: organizerCode(), id: s.id });
+      setRemoteSessions((S.remoteSessions || []).filter((x) => x.id !== s.id));
+      setTimeout(loadSheet, 2000);
+      return;
+    }
+    throw new Error('not connected');
+  }
+
+  function editError(err) {
+    const c = err && err.code;
+    if (c === 'bad_code') return 'That organizer code isn\'t right.';
+    if (c === 'no_code_set') return 'Set ORGANIZER_CODE in your Google script first. The README explains how.';
+    if (c === 'invalid_argument') return 'Only the page owner and editors can change the schedule.';
+    if (/Missing form/i.test((err && err.message) || '')) return 'Your Google script is the old version. Update it (see the README) to edit the schedule here.';
+    return 'Couldn\'t save. Check your connection and try again.';
+  }
+
+  // ---- editor dialog
+
+  function editorDialog() {
+    let d = $('#schedule-editor');
+    if (!d) {
+      d = el('dialog', { class: 'editor-dialog', id: 'schedule-editor', 'aria-labelledby': 'editor-title' });
+      d.addEventListener('click', (e) => { if (e.target === d) d.close(); });
+      document.body.append(d);
+    }
+    return d;
+  }
+
+  function openEditor(id) {
+    S.editId = id;
+    S.editorMsg = null;
+    const d = editorDialog();
+    renderEditor();
+    if (!d.open) d.showModal();
+  }
+
+  function renderEditor(message) {
+    if (message !== undefined) S.editorMsg = message;
+    message = S.editorMsg;
+    const d = editorDialog();
+    const editing = S.editId && S.editId !== 'new' ? S.sessions.find((s) => s.id === S.editId) || null : null;
+    const showForm = S.editId === 'new' || !!editing;
+    const msg = el('div', { class: 'editor-msg', 'aria-live': 'polite' },
+      message ? el('p', { class: 'form-done' }, message) : null);
+    fill(d,
+      el('div', { class: 'editor-bar' },
+        el('h2', { id: 'editor-title' }, showForm ? (editing ? 'Edit session' : 'Add a session') : 'Schedule'),
+        el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => d.close() }, 'Close')),
+      el('div', { class: 'editor-body' },
+        B.kind === 'sheet' ? codeField() : null,
+        msg,
+        showForm ? sessionForm(editing, msg) : sessionList(msg)));
+  }
+
+  function codeField() {
+    const input = el('input', { type: 'password', id: 'org-code', autocomplete: 'off' });
+    input.value = organizerCode();
+    input.addEventListener('input', () => {
+      S.orgCode = input.value;
+      try { localStorage.setItem('rg-code', input.value); } catch (e) { /* storage unavailable */ }
+    });
+    return el('label', { class: 'q code-field', for: 'org-code' },
+      el('span', { class: 'q-label' }, 'Organizer code'),
+      input,
+      el('span', { class: 'hint' }, 'The code you set in the Google script. This browser remembers it.'));
+  }
+
+  function sessionList(msg) {
+    const list = S.sessions.slice();
+    return [
+      el('div', { class: 'button-row', style: 'margin:0 0 18px' },
+        el('button', { class: 'btn btn-primary btn-big', type: 'button', onclick: () => { S.editId = 'new'; renderEditor(null); } }, 'Add a session')),
+      list.length
+        ? el('ul', { class: 'editor-list' }, list.map((s) => el('li', { class: statusOf(s) === 'past' ? 'is-past' : null },
+          el('span', { class: 'editor-when' }, fmtDate(s.startDate, { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' + fmtTime(s.startDate)),
+          el('span', { class: 'editor-what' }, s.title),
+          el('span', { class: 'editor-actions' },
+            el('button', { class: 'btn', type: 'button', onclick: () => { S.editId = s.id; renderEditor(null); } }, 'Edit'),
+            deleteButton(s, msg)))))
+        : el('p', { class: 'muted' }, 'No sessions yet. Add the first one.')
+    ];
+  }
+
+  function deleteButton(s, msg) {
+    const btn = el('button', { class: 'btn btn-quiet danger', type: 'button' }, 'Delete');
+    let armed = false;
+    let timer;
+    btn.addEventListener('click', async () => {
+      if (!armed) {
+        armed = true;
+        btn.textContent = 'Tap again to delete';
+        timer = setTimeout(() => { armed = false; btn.textContent = 'Delete'; }, 3000);
+        return;
+      }
+      clearTimeout(timer);
+      btn.disabled = true;
+      btn.textContent = 'Deleting…';
+      try {
+        await removeSession(s);
+        S.editId = null;
+        renderEditor('Deleted "' + s.title + '".');
+      } catch (err) {
+        armed = false;
+        btn.disabled = false;
+        btn.textContent = 'Delete';
+        msg.replaceChildren(el('p', { class: 'form-error' }, editError(err)));
+      }
+    });
+    return btn;
+  }
+
+  function label12(hhmm) {
+    const [h, m] = hhmm.split(':').map(Number);
+    return ((h + 11) % 12 + 1) + (m ? ':' + pad2(m) : '') + (h < 12 ? ' AM' : ' PM');
+  }
+
+  function sessionForm(s, msg) {
+    const tz = TZ();
+    const times = S.config.sessionTimes || [];
+    let date = '';
+    let time = times[0] || '16:00';
+    if (s) {
+      const p = Core.tzParts(s.startDate, tz);
+      date = p.y + '-' + pad2(p.m) + '-' + pad2(p.d);
+      time = pad2(p.h) + ':' + pad2(p.mi);
+    }
+    const len = s ? Math.round((s.endDate - s.startDate) / 60000) : (S.config.defaultDurationMinutes || 60);
+
+    const fDate = el('input', { type: 'date', id: 'ed-date', required: true });
+    fDate.value = date;
+    const fTime = el('input', { type: 'time', id: 'ed-time', step: 300 });
+    fTime.value = time;
+    const quick = el('div', { class: 'quick' });
+    const markQuick = () => $$('button', quick).forEach((b) => b.classList.toggle('on', b.dataset.t === fTime.value));
+    quick.append(...times.map((t) => el('button', {
+      type: 'button', class: 'btn', 'data-t': t,
+      onclick: () => { fTime.value = t; markQuick(); }
+    }, label12(t))));
+    fTime.addEventListener('input', markQuick);
+    markQuick();
+    const fLen = el('select', { id: 'ed-len' }, [30, 45, 60, 90, 120].map((n) => el('option', { value: String(n) }, n + ' min')));
+    fLen.value = String([30, 45, 60, 90, 120].includes(len) ? len : 60);
+
+    const fTitle = el('input', { type: 'text', id: 'ed-title', placeholder: 'For example: Causal abstraction', autocomplete: 'off' });
+    fTitle.value = s ? s.title : '';
+    const topics = ((S.config.scope || {}).topics || []);
+    const topicChips = el('div', { class: 'quick' }, topics.map((t) => el('button', {
+      type: 'button', class: 'btn',
+      onclick: () => { fTitle.value = t; fTitle.focus(); }
+    }, t)));
+
+    const chosen = new Set(s ? s.presenters || [] : []);
+    const presenterChips = el('div', { class: 'chips' }, S.members.map((m) => el('label', { class: 'chip' },
+      el('input', { type: 'checkbox', name: 'ed-presenter', value: m.id, checked: chosen.has(m.id) || chosen.has(m.name) }),
+      el('span', null, m.name))));
+
+    const readingBox = el('div', { class: 'reading-list' });
+    const addReading = (r) => {
+      const t = el('input', { type: 'text', placeholder: 'Paper title', 'aria-label': 'Paper title', class: 'rd-title' });
+      const u = el('input', { type: 'url', placeholder: 'Link (arXiv, PDF…)', 'aria-label': 'Paper link', class: 'rd-url' });
+      t.value = (r && r.title) || '';
+      u.value = (r && r.url) || '';
+      readingBox.append(el('div', { class: 'reading-row' }, t, u));
+    };
+    const existingReading = s ? (s.reading && s.reading.length ? s.reading
+      : (s.papers || []).map((id) => S.papersById[id]).filter((p) => p && !p.derived).map((p) => ({ title: p.title, url: p.url || p.pdf || '' }))) : [];
+    (existingReading.length ? existingReading : [null]).forEach(addReading);
+
+    const fPrep = el('textarea', { id: 'ed-prep', rows: 3, placeholder: 'For example: read sections 1–3' });
+    fPrep.value = s ? s.prep || '' : '';
+    const fLoc = el('input', { type: 'text', id: 'ed-loc', placeholder: S.config.defaultLocation || 'Room or "Online"' });
+    fLoc.value = s ? s.location || '' : '';
+    const fLink = el('input', { type: 'url', id: 'ed-link', placeholder: 'https://…' });
+    fLink.value = s ? s.meetingLink || '' : '';
+    const fSlides = el('input', { type: 'url', id: 'ed-slides', placeholder: 'https://…' });
+    fSlides.value = s ? s.slides || '' : '';
+    const fRec = el('input', { type: 'url', id: 'ed-rec', placeholder: 'https://…' });
+    fRec.value = s ? s.recording || '' : '';
+
+    const save = el('button', { class: 'btn btn-primary btn-big', type: 'submit' }, 'Save session');
+    const form = el('form', { class: 'survey-form editor-form', novalidate: true },
+      el('div', { class: 'ed-row' },
+        el('label', { class: 'q', for: 'ed-date' }, el('span', { class: 'q-label' }, 'Date', el('span', { class: 'req' }, 'Required')), fDate),
+        el('label', { class: 'q', for: 'ed-time' }, el('span', { class: 'q-label' }, 'Start time (GST)'), fTime),
+        el('label', { class: 'q', for: 'ed-len' }, el('span', { class: 'q-label' }, 'Length'), fLen)),
+      times.length ? quick : null,
+      el('div', { class: 'q' },
+        el('label', { class: 'q-label', for: 'ed-title' }, 'Topic', el('span', { class: 'req' }, 'Required')),
+        fTitle,
+        topics.length ? [el('p', { class: 'hint', style: 'margin:8px 0 0' }, 'Or tap one:'), topicChips] : null),
+      S.members.length ? el('fieldset', { class: 'q' }, el('legend', null, 'Presenter'), presenterChips) : null,
+      el('div', { class: 'q' },
+        el('span', { class: 'q-label' }, 'Reading'),
+        readingBox,
+        el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => addReading(null) }, 'Add another paper')),
+      el('label', { class: 'q', for: 'ed-prep' }, el('span', { class: 'q-label' }, 'What to prepare'), fPrep),
+      el('details', { class: 'more-options' },
+        el('summary', null, 'More options'),
+        el('div', { class: 'survey-form', style: 'margin-top:14px' },
+          el('label', { class: 'q', for: 'ed-loc' }, el('span', { class: 'q-label' }, 'Place'), fLoc),
+          el('label', { class: 'q', for: 'ed-link' }, el('span', { class: 'q-label' }, 'Online meeting link'), fLink),
+          el('label', { class: 'q', for: 'ed-slides' }, el('span', { class: 'q-label' }, 'Slides link (after the session)'), fSlides),
+          el('label', { class: 'q', for: 'ed-rec' }, el('span', { class: 'q-label' }, 'Recording link (after the session)'), fRec))),
+      el('div', { class: 'button-row' },
+        save,
+        el('button', { class: 'btn', type: 'button', onclick: () => { S.editId = null; renderEditor(null); } }, 'Cancel')));
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      if (!fDate.value) { msg.replaceChildren(el('p', { class: 'form-error' }, 'Choose a date.')); fDate.focus(); return; }
+      if (!fTitle.value.trim()) { msg.replaceChildren(el('p', { class: 'form-error' }, 'Write or pick a topic.')); fTitle.focus(); return; }
+      const reading = $$('.reading-row', readingBox).map((row) => ({
+        title: $('.rd-title', row).value.trim(),
+        url: httpsOnly($('.rd-url', row).value.trim())
+      })).filter((r) => r.title);
+      const sess = {
+        id: s ? s.id : 's' + Date.now().toString(36),
+        start: fDate.value + ' ' + (fTime.value || time),
+        durationMinutes: Number(fLen.value) || 60,
+        title: fTitle.value.trim(),
+        label: s && s.label ? s.label : '',
+        presenters: $$('input[name=ed-presenter]', form).filter((i) => i.checked).map((i) => i.value),
+        reading,
+        papers: [],
+        prep: fPrep.value.trim(),
+        location: fLoc.value.trim(),
+        meetingLink: httpsOnly(fLink.value.trim()),
+        slides: httpsOnly(fSlides.value.trim()),
+        recording: httpsOnly(fRec.value.trim()),
+        questions: s ? s.questions || [] : [],
+        builds_on: s ? s.builds_on || [] : []
+      };
+      save.disabled = true;
+      save.textContent = 'Saving…';
+      try {
+        await saveSession(sess);
+        S.editId = null;
+        renderEditor('Saved "' + sess.title + '".');
+      } catch (err) {
+        save.disabled = false;
+        save.textContent = 'Save session';
+        msg.replaceChildren(el('p', { class: 'form-error' }, editError(err)));
+      }
+    });
+    return form;
   }
 
   // ------------------------------------------------------------------ footer

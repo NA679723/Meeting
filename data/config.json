@@ -16,18 +16,7 @@
   "labName": "Lab",
   "contactEmail": "",
   "sharedFolderUrl": "",
-  "tracks": [
-    {
-      "id": "theory",
-      "name": "Theory",
-      "description": "Identification arguments, proofs and the assumptions behind them."
-    },
-    {
-      "id": "practice",
-      "name": "Practice",
-      "description": "Estimators in use: code walkthroughs, replications and applied papers."
-    }
-  ],
+  "tracks": [],
   "scope": {
     "intro": "Topics are chosen by members, so this is a map rather than a fixed syllabus. Anything connected to causal reasoning can be proposed.",
     "topics": [
@@ -46,10 +35,15 @@
       "We work through the identifying assumptions and the key argument or estimator, slowing down at the steps that matter.",
       "The last 20 minutes are open discussion: limitations, links to earlier sessions, and what to read next."
     ],
-    "note": "Practice sessions can add a code walkthrough, a replication or a small simulation. A session can cover a single theorem or section rather than a whole paper."
+    "note": "A session can cover a single theorem or section rather than a whole paper, and can include a code walkthrough or a small simulation."
   },
   "participation": {
     "intro": "Sessions are open to anyone, including people outside the group and prospective students. Come to listen and ask questions, or volunteer to present something you want to understand better.",
     "presentSurveyId": "present"
-  }
+  },
+  "sessionTimes": [
+    "11:00",
+    "14:00",
+    "16:00"
+  ]
 }

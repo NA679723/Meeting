@@ -2,9 +2,9 @@
   {
     "id": "vote",
     "title": "Vote: topics and meeting time",
-    "description": "Choose your name, tap up to three topics, and tap every time slot that works for you. Then press Submit vote.",
+    "description": "Choose your name, tap up to three topics, and tap every date and time you can make. Then press Submit vote.",
     "status": "open",
-    "closes": "2026-12-20",
+    "closes": "2026-12-18",
     "showResults": true,
     "submitLabel": "Submit vote",
     "questions": [
@@ -35,59 +35,17 @@
         "id": "times",
         "type": "grid",
         "required": true,
-        "label": "Times that work for you (GST, UTC+4)",
-        "rows": [
-          "Monday",
-          "Tuesday",
-          "Wednesday",
-          "Thursday",
-          "Friday"
-        ],
+        "label": "Dates and times you can make (GST, UTC+4)",
+        "rows": {
+          "from": "2026-11-30",
+          "to": "2026-12-18",
+          "weekdays": true
+        },
         "columns": [
+          "11 AM–12 PM",
           "2–3 PM",
           "4–5 PM"
         ]
-      }
-    ]
-  },
-  {
-    "id": "feedback",
-    "title": "Session feedback",
-    "description": "Two minutes after a session helps the next presenter.",
-    "status": "open",
-    "closes": "",
-    "showResults": true,
-    "submitLabel": "Send feedback",
-    "dedupeBy": [
-      "session"
-    ],
-    "questions": [
-      {
-        "id": "name",
-        "type": "member",
-        "required": true,
-        "label": "Your name"
-      },
-      {
-        "id": "session",
-        "type": "select",
-        "required": true,
-        "label": "Which session?",
-        "options": "sessions:past"
-      },
-      {
-        "id": "useful",
-        "type": "rating",
-        "scale": 5,
-        "required": true,
-        "label": "How useful was it?",
-        "low": "Not useful",
-        "high": "Very useful"
-      },
-      {
-        "id": "change",
-        "type": "textarea",
-        "label": "One thing to keep or change"
       }
     ]
   },

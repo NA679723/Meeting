@@ -5,7 +5,7 @@ A one-page site for a paper reading group, hosted free on GitHub Pages. It has:
 - **Next session**: date, time (also shown in each visitor's own time zone), papers, presenters, prep and discussion questions
 - **Reading roadmap**: a small DAG of sessions showing which ones build on which
 - **About**: what the group reads, how a session works, and how to take part
-- **Schedule**: month calendar, upcoming and past sessions, Theory and Practice track filters, plus a calendar feed people can subscribe to
+- **Schedule**: month calendar and list of upcoming and past sessions. Organizers add, change and delete sessions on the website with **Edit schedule**.
 - **Shared papers**: searchable library with PDF links and status (scheduled, discussed, not yet scheduled)
 - **People**: organizers and participants, with GitHub avatars
 - **Vote**: one simple form for topics and meeting times, with live results, plus session feedback and presenter sign-up. Answers are saved in a Google Sheet you own.
@@ -28,14 +28,28 @@ Every push to `main` redeploys the site and rebuilds the calendar feed.
 
 Then connect voting (below) so votes are saved.
 
+## Edit the schedule on the website
+
+Click **Edit schedule** in the Schedule section (or **Add a session** in the top box). Pick a date, tap a time (11 AM, 2 PM or 4 PM, or type another), tap a topic, tap the presenter, and paste a link to the reading. Press **Save session**. The top box, calendar, session list and paper list update by themselves.
+
+On GitHub Pages, sessions are saved in the same Google Sheet as votes, in a **Sessions** tab. Only people who know the organizer code can save changes:
+
+1. Open your Google Sheet → **Extensions → Apps Script**.
+2. Replace all the code with the new `scripts/vote-backend.gs`.
+3. Change `ORGANIZER_CODE = 'change-me'` to your own code, for example `'cirg-2026'`. Click **Save**.
+4. **Deploy → Manage deployments** → click the pencil → **Version: New version** → **Deploy**. The web address stays the same.
+5. On the website, click **Edit schedule** and type the code once. The browser remembers it.
+
+The quick time buttons come from `"sessionTimes"` in `config.json`.
+
 ## Edit content
 
 All content lives in `data/`. You can edit files directly on GitHub: open the file, click the pencil, commit. The site updates in about a minute.
 
 | File | What it controls |
 |---|---|
-| `config.json` | Group name, purpose, regular meeting time, time zone, location, meeting link, lab link, contact email, tracks, scope topics, session format, participation text |
-| `sessions.json` | Every session: date, track, title, papers, presenters, prep, questions, slides, recording |
+| `config.json` | Group name, purpose, regular meeting time, time zone, location, meeting link, lab link, contact email, quick session times, scope topics, session format, participation text |
+| `sessions.json` | Sessions written by hand (sessions added on the website are kept in the Google Sheet): date, title, papers, presenters, prep, questions, slides, recording |
 | `papers.json` | The shared paper library |
 | `members.json` | Organizers and participants |
 | `surveys.json` | The vote and other forms |
@@ -48,7 +62,6 @@ If the site shows a yellow "Something in the data files needs fixing" banner, a 
 {
   "id": "s10",
   "start": "2027-02-24 16:00",
-  "track": "theory",
   "label": "IV and LATE",
   "title": "Instrumental variables and local average treatment effects",
   "papers": ["imbens-angrist-1994"],
@@ -65,7 +78,6 @@ If the site shows a yellow "Something in the data files needs fixing" banner, a 
 - `id` must be unique. It is used in links such as `#session-s10` and in calendar invites.
 - `papers` and `presenters` refer to `id`s in `papers.json` and `members.json`. A presenter who isn't a member can be written as a plain name.
 - `builds_on` draws the arrows in the roadmap. Leave it empty for a starting point. If no session uses it, the roadmap draws a simple timeline.
-- `track` must match a track `id` in `config.json`. The first track is drawn as a circle and the second as a square.
 - Optional: `durationMinutes`, `location`, `meetingLink` (each overrides the default for that session), `notes` (a link).
 - Once the roadmap gets long, set `"roadmapFrom": "2027-01-01"` in `config.json` to show only recent sessions.
 
