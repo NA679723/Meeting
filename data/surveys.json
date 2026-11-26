@@ -1,8 +1,8 @@
 [
   {
     "id": "vote",
-    "title": "Vote: topics and meeting time",
-    "description": "Choose your name, tap every topic you're interested in (or add your own), and tap every date and time you can make. Then press Submit vote.",
+    "title": "Step 1: Vote for topics",
+    "description": "Choose your name and tap the topics you'd like to read, or add your own. Then press Submit vote.",
     "status": "open",
     "closes": "2026-12-18",
     "showResults": true,
@@ -31,12 +31,29 @@
         ],
         "allowOther": true,
         "otherPlaceholder": "Add your own topic"
+      }
+    ]
+  },
+  {
+    "id": "dates",
+    "title": "Step 2: Vote for dates",
+    "description": "For each topic below, tap every date and time when you could join a session on it. Then press Submit dates.",
+    "status": "open",
+    "closes": "",
+    "showResults": true,
+    "submitLabel": "Submit dates",
+    "questions": [
+      {
+        "id": "name",
+        "type": "member",
+        "required": true,
+        "label": "Your name"
       },
       {
         "id": "times",
         "type": "grid",
         "required": true,
-        "label": "Dates and times you can make (GST, UTC+4)",
+        "label": "When could you join each session? (GST, UTC+4)",
         "rows": {
           "from": "2026-11-30",
           "to": "2026-12-18",
@@ -46,7 +63,9 @@
           "11 AM–12 PM",
           "2–3 PM",
           "4–5 PM"
-        ]
+        ],
+        "perTopic": true,
+        "topicList": []
       }
     ]
   },

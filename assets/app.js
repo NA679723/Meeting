@@ -334,9 +334,28 @@
 
   // ---- Google Sheet (GitHub Pages)
 
-  function readAccess() { try { return localStorage.getItem('rg-access') || ''; } catch (e) { return ''; } }
+  // The code is kept only for this browser tab, unless the person ticks "Keep me signed in on this device".
+  function readAccess() {
+    try {
+      const tab = sessionStorage.getItem('rg-access');
+      if (tab) return tab;
+      if (localStorage.getItem('rg-remember') === '1') return localStorage.getItem('rg-access') || '';
+      localStorage.removeItem('rg-access');
+      return '';
+    } catch (e) { return ''; }
+  }
   function writeAccess(v) {
-    try { if (v) localStorage.setItem('rg-access', v); else localStorage.removeItem('rg-access'); } catch (e) { /* storage unavailable */ }
+    try {
+      if (v) {
+        sessionStorage.setItem('rg-access', v);
+        if (S.rememberDevice) { localStorage.setItem('rg-access', v); localStorage.setItem('rg-remember', '1'); }
+        else if (S.rememberDevice === false) { localStorage.removeItem('rg-access'); localStorage.removeItem('rg-remember'); }
+      } else {
+        sessionStorage.removeItem('rg-access');
+        localStorage.removeItem('rg-access');
+        localStorage.removeItem('rg-remember');
+      }
+    } catch (e) { /* storage unavailable */ }
   }
 
   async function sheetPost(payload) {
@@ -460,7 +479,9 @@
     if (!box) return;
     const input = el('input', { type: 'password', id: 'lock-code', autocomplete: 'current-password', 'aria-label': 'Group code', placeholder: 'Group code' });
     const btn = el('button', { class: 'btn btn-primary btn-big', type: 'submit' }, 'Open');
-    const form = el('form', { class: 'lock-form' }, input, btn);
+    const keep = el('input', { type: 'checkbox', id: 'lock-keep' });
+    const form = el('form', { class: 'lock-form' }, input, btn,
+      el('label', { class: 'choice lock-keep', for: 'lock-keep' }, keep, el('span', null, 'Keep me signed in on this device')));
     const opening = message === 'Opening…';
     if (opening) { input.disabled = true; btn.disabled = true; }
     form.addEventListener('submit', async (e) => {
@@ -469,12 +490,13 @@
       if (!v) { input.focus(); return; }
       btn.disabled = true;
       btn.textContent = 'Opening…';
+      S.rememberDevice = keep.checked;
       await unlock(v, false);
     });
     fill(box,
       el('p', { class: 'next-kicker' }, el('span', null, 'Members only')),
       el('h2', { class: 'next-title' }, 'Enter the group code'),
-      el('p', { class: 'muted' }, 'The schedule, papers, vote and chat are for group members. Ask an organizer for the code. This device remembers it.'),
+      el('p', { class: 'muted' }, 'The schedule, papers, vote and chat are for group members. Ask an organizer for the code. You\'ll be asked again after closing this tab, unless you tick "Keep me signed in".'),
       form,
       message ? el('p', { class: opening ? 'muted' : 'form-error', 'aria-live': 'polite' }, message) : null);
   }
@@ -1412,7 +1434,7 @@
     panel.setAttribute('aria-labelledby', 'tab-' + sv.id);
     fill(panel,
       el('h3', null, sv.title),
-      isOrganizer() ? el('p', { class: 'edit-link' }, el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => openFormEditor(sv.id) }, sv.id === 'vote' ? 'Edit topics, dates, times and wording' : 'Edit this form')) : null,
+      isOrganizer() ? el('p', { class: 'edit-link' }, el('button', { class: 'btn btn-quiet', type: 'button', onclick: () => openFormEditor(sv.id) }, sv.id === 'vote' ? 'Edit topics and wording' : sv.id === 'dates' ? 'Edit topics to schedule, dates and times' : 'Edit this form')) : null,
       el('p', { class: 'survey-status' }, surveyStatusText(sv)),
       sv.description ? el('p', { class: 'survey-desc' }, sv.description) : null);
     S.formDirty = false;
@@ -1421,7 +1443,7 @@
         el('a', { class: 'btn btn-primary', href: sv.externalUrl, target: '_blank', rel: 'noopener' }, 'Open the form')));
       return;
     }
-    if (surveyClosed(sv)) panel.append(el('p', { class: 'muted' }, 'This is closed. Thanks to everyone who answered.'));
+    if (surveyClosed(sv)) panel.append(el('p', { class: 'muted closed-note' }, sv.closedNote || 'This is closed. Thanks to everyone who answered.'));
     else panel.append(buildForm(sv));
     if (sv.showResults !== false || isOrganizer()) {
       const res = el('section', { class: 'results', 'aria-label': 'Results' });
@@ -1459,10 +1481,12 @@
   }
 
   function currentVoteSettings() {
-    const base = (S.baseSurveys || []).find((v) => v.id === 'vote');
-    if (!base) return null;
-    const qT = (base.questions || []).find((q) => q.id === 'topics') || {};
-    const qG = (base.questions || []).find((q) => q.type === 'grid') || {};
+    const find = (id) => (S.baseSurveys || []).find((v) => v.id === id);
+    const bv = find('vote');
+    const bd = find('dates') || bv;
+    if (!bv) return null;
+    const qT = (bv.questions || []).find((q) => q.id === 'topics') || {};
+    const qG = ((bd && bd.questions) || []).find((q) => q.type === 'grid') || {};
     const rows = qG.rows && !Array.isArray(qG.rows) ? qG.rows : {};
     const v = S.voteSettings || {};
     const has = !!S.voteSettings;
@@ -1471,8 +1495,10 @@
       from: v.from || rows.from || '', to: v.to || rows.to || '',
       weekdays: has ? v.weekdays !== false : rows.weekdays !== false,
       columns: v.columns && v.columns.length ? v.columns.slice() : (qG.columns || []).slice(),
-      closes: has ? v.closes || '' : base.closes || '',
-      hideTopics: !!v.hideTopics, hideTimes: !!v.hideTimes
+      closes: has ? v.closes || '' : bv.closes || '',
+      maxTopics: has ? v.maxTopics || 0 : (qT.max || 0),
+      perTopic: has && typeof v.perTopic === 'boolean' ? v.perTopic : !!qG.perTopic,
+      dateTopics: has && Array.isArray(v.dateTopics) ? v.dateTopics.slice() : (qG.topicList || []).slice()
     };
   }
 
@@ -1556,6 +1582,11 @@
           const doAdd = () => {
             const v = inp.value.trim();
             if (!v) { inp.focus(); return; }
+            if (q.max && $$('input[type=checkbox]', fs).filter((i) => i.checked).length >= q.max) {
+              const hint = $('.hint', fs);
+              if (hint) hint.textContent = 'You can pick up to ' + q.max + '. Untick one first.';
+              return;
+            }
             const list = $('.chips, .choices', fs);
             const existing = $$('input', list).find((i) => i.value.toLowerCase() === v.toLowerCase());
             if (existing) existing.checked = true;
@@ -1569,23 +1600,18 @@
         return fs;
       }
       case 'grid': {
-        const today = todayKey();
-        const rows = gridRows(q);
-        const table = el('table', { class: 'slot-grid' },
-          el('thead', null, el('tr', null, el('td'), (q.columns || []).map((c) => el('th', { scope: 'col' }, c)))),
-          el('tbody', null, rows.map((r, i) => {
-            const past = !!(r.key && r.key < today);
-            return el('tr', { class: (r.monday && i > 0 ? 'week-start' : '') + (past ? ' past' : '') || null },
-              el('th', { scope: 'row' }, r.label),
-              (q.columns || []).map((c) => el('td', null,
-                el('label', { class: 'slot' },
-                  el('input', { type: 'checkbox', name, value: r.label + ' ' + c, 'aria-label': r.label + ' ' + c, disabled: past }),
-                  el('span', { 'aria-hidden': 'true' })))));
-          })));
+        if (q.perTopic) {
+          return el('fieldset', { class: 'q', 'data-q': q.id },
+            el('legend', null, q.label, req),
+            el('p', { class: 'hint' }, q.topicList && q.topicList.length
+              ? 'For each topic, tap every slot when you could join a session on it. Leave a topic empty if you would skip it.'
+              : 'For each topic you picked, tap every slot when you could join a session on it.'),
+            el('div', { class: 'per-topic' }));
+        }
         return el('fieldset', { class: 'q', 'data-q': q.id },
           el('legend', null, q.label, req),
           el('p', { class: 'hint' }, q.hint || 'Tap every slot you can make.'),
-          el('div', { class: 'slot-wrap' }, table));
+          el('div', { class: 'slot-wrap' }, slotTable(q, name, '')));
       }
       case 'rating': {
         const scale = q.scale || 5;
@@ -1612,6 +1638,59 @@
     }
   }
 
+  function slotTable(q, name, labelPrefix) {
+    const today = todayKey();
+    return el('table', { class: 'slot-grid' },
+      el('thead', null, el('tr', null, el('td'), (q.columns || []).map((c) => el('th', { scope: 'col' }, c)))),
+      el('tbody', null, gridRows(q).map((r, i) => {
+        const past = !!(r.key && r.key < today);
+        return el('tr', { class: (r.monday && i > 0 ? 'week-start' : '') + (past ? ' past' : '') || null },
+          el('th', { scope: 'row' }, r.label),
+          (q.columns || []).map((c) => el('td', null,
+            el('label', { class: 'slot' },
+              el('input', { type: 'checkbox', name, value: r.label + ' ' + c, 'aria-label': labelPrefix + r.label + ' ' + c, disabled: past }),
+              el('span', { 'aria-hidden': 'true' })))));
+      })));
+  }
+
+  function topicGridName(sv, q, topic) { return sv.id + '__' + q.id + '::' + topic; }
+  function topicInputs(block) { return $$('input[type=checkbox]', block); }
+
+  // Per-topic dates: one grid for each topic the person has ticked.
+  function syncPerTopic(form, sv) {
+    const q = (sv.questions || []).find((x) => x.type === 'grid' && x.perTopic);
+    if (!q) return;
+    const wrap = form.querySelector('[data-q="' + q.id + '"] .per-topic');
+    const fixed = Array.isArray(q.topicList) && q.topicList.length ? q.topicList : null;
+    const tq = (sv.questions || []).find((x) => x.id === (q.topicsFrom || 'topics'));
+    if (!wrap || (!fixed && !tq)) return;
+    const chosen = fixed || fieldsFor(form, sv, tq).filter((f) => f.checked).map((f) => f.value);
+    const existing = new Map($$('.topic-grid', wrap).map((b) => [b.dataset.topic, b]));
+    const blocks = chosen.map((t, i) => {
+      let b = existing.get(t);
+      if (!b) {
+        const count = el('span', { class: 'topic-count' });
+        const copy = el('button', { class: 'btn btn-quiet', type: 'button' }, 'Same times as above');
+        b = el('details', { class: 'topic-grid', 'data-topic': t, open: true },
+          el('summary', null, el('span', { class: 'topic-name' }, t), count),
+          el('div', { class: 'topic-tools' }, copy),
+          el('div', { class: 'slot-wrap' }, slotTable(q, topicGridName(sv, q, t), t + ': ')));
+        copy.addEventListener('click', () => {
+          const prev = b.previousElementSibling;
+          if (!prev || !prev.classList.contains('topic-grid')) return;
+          const on = new Set(topicInputs(prev).filter((x) => x.checked).map((x) => x.value));
+          for (const x of topicInputs(b)) if (!x.disabled) x.checked = on.has(x.value);
+          b.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+      }
+      $('.topic-tools', b).hidden = i === 0;
+      const n = topicInputs(b).filter((x) => x.checked).length;
+      $('.topic-count', b).textContent = n ? plural(n, 'slot') : 'no slots yet';
+      return b;
+    });
+    wrap.replaceChildren(...(blocks.length ? blocks : [el('p', { class: 'muted small' }, 'Pick at least one topic above, then choose dates for it here.')]));
+  }
+
   function fieldsFor(form, sv, q) {
     const name = sv.id + '__' + q.id;
     return $$('[name="' + (window.CSS && CSS.escape ? CSS.escape(name) : name) + '"]', form);
@@ -1623,7 +1702,13 @@
     for (const q of sv.questions || []) {
       const fields = fieldsFor(form, sv, q);
       let v;
-      if (q.type === 'multi' || q.type === 'grid') v = fields.filter((f) => f.checked).map((f) => f.value);
+      if (q.type === 'grid' && q.perTopic) {
+        v = {};
+        for (const b of $$('[data-q="' + q.id + '"] .topic-grid', form)) {
+          const picked = topicInputs(b).filter((x) => x.checked).map((x) => x.value);
+          if (picked.length) v[b.dataset.topic] = picked;
+        }
+      } else if (q.type === 'multi' || q.type === 'grid') v = fields.filter((f) => f.checked).map((f) => f.value);
       else if (q.type === 'single' || q.type === 'rating') {
         const c = fields.find((f) => f.checked);
         v = c ? (q.type === 'rating' ? Number(c.value) : c.value) : '';
@@ -1633,9 +1718,9 @@
       } else {
         v = fields[0] ? fields[0].value.trim() : '';
       }
-      const empty = Array.isArray(v) ? v.length === 0 : v === '' || v == null;
+      const empty = Array.isArray(v) ? v.length === 0 : (v && typeof v === 'object') ? Object.keys(v).length === 0 : v === '' || v == null;
       if (q.required && empty && !firstMissing) firstMissing = q;
-      answers[q.id] = empty ? (Array.isArray(v) ? [] : '') : v;
+      answers[q.id] = empty ? (Array.isArray(v) ? [] : (v && typeof v === 'object') ? {} : '') : v;
     }
     return { answers, firstMissing };
   }
@@ -1645,6 +1730,15 @@
       const v = answers[q.id];
       const fields = fieldsFor(form, sv, q);
       if (q.type === 'member') continue;
+      if (q.type === 'grid' && q.perTopic) {
+        syncPerTopic(form, sv);
+        for (const b of $$('[data-q="' + q.id + '"] .topic-grid', form)) {
+          const want = new Set(Array.isArray(v) ? v : (v && typeof v === 'object' && Array.isArray(v[b.dataset.topic]) ? v[b.dataset.topic] : []));
+          for (const x of topicInputs(b)) x.checked = want.has(x.value);
+        }
+        syncPerTopic(form, sv);
+        continue;
+      }
       for (const f of fields) {
         if (f.type === 'checkbox' || f.type === 'radio') f.checked = [].concat(v == null ? [] : v).map(String).includes(f.value);
         else f.value = v == null ? '' : String(v);
@@ -1707,22 +1801,40 @@
       el('p', null, 'Answering again with the same name replaces your earlier answer.')));
 
     const memberQ = (sv.questions || []).find((q) => q.type === 'member' || q.id === 'name');
-    const showPrevious = () => {
+    const clearAnswers = () => {
+      for (const q of sv.questions || []) {
+        if (q.type === 'member' || q.id === 'name') continue;
+        for (const f of fieldsFor(form, sv, q)) {
+          if (f.type === 'checkbox' || f.type === 'radio') { f.checked = false; f.disabled = false; }
+          else f.value = '';
+        }
+        for (const w of $$('[data-q="' + q.id + '"] .chip-wrap', form)) if ($('.chip-x:not(.org)', w)) w.remove();
+        for (const x of $$('[data-q="' + q.id + '"] .topic-grid input[type=checkbox]', form)) x.checked = false;
+        const fs = form.querySelector('[data-q="' + q.id + '"]');
+        if (fs) fs.dispatchEvent(new Event('change'));
+      }
+      syncPerTopic(form, sv);
+    };
+    const showPrevious = (changed) => {
       if (!memberQ || (sv.dedupeBy || []).length) return;
       const { answers } = collectAnswers(sv, form);
       const name = String(answers[memberQ.id] || '').trim().toLowerCase();
       const prev = name ? latestRows(sv).find((r) => r.key === name) : null;
       prevNote.hidden = !prev;
+      if (!prev && changed) clearAnswers();
       if (prev) {
+        clearAnswers();
         prevNote.textContent = 'You answered on ' + fmtDate(new Date(prev.at), { day: 'numeric', month: 'short' }) + '. Your earlier choices are filled in below.';
         prefill(form, sv, prev.answers);
       }
     };
+    syncPerTopic(form, sv);
     form.addEventListener('change', (e) => {
       S.formDirty = true;
+      if (e.target && (String(e.target.name || '').startsWith(sv.id + '__') || e.target.classList.contains('topic-grid'))) syncPerTopic(form, sv);
       if (memberQ && e.target && e.target.name === sv.id + '__' + memberQ.id) {
         if (e.target.value && e.target.value !== '__other') rememberName(e.target.value);
-        showPrevious();
+        showPrevious(true);
       }
     });
     form.addEventListener('input', () => { S.formDirty = true; });
@@ -1773,9 +1885,35 @@
       el('span', { class: 'bar-count' }, count + (denom ? ' (' + pct + '%)' : '')));
   }
 
+  function slotsOf(v) {
+    if (Array.isArray(v)) return v;
+    if (v && typeof v === 'object') return Array.from(new Set(Object.values(v).flat()));
+    return [];
+  }
+
+  function perTopicResult(q, rows, sv) {
+    const tq = (sv.questions || []).find((x) => x.id === (q.topicsFrom || 'topics'));
+    const per = new Map();
+    for (const r of rows) {
+      const v = r.answers[q.id];
+      const picked = tq ? [].concat(r.answers[tq.id] || []) : [];
+      const entries = Array.isArray(v) ? picked.map((t) => [t, v]) : (v && typeof v === 'object') ? Object.entries(v) : [];
+      for (const [t, slots] of entries) {
+        if (!Array.isArray(slots) || !slots.length) continue;
+        if (!per.has(t)) per.set(t, []);
+        per.get(t).push(slots);
+      }
+    }
+    if (!per.size) return [el('p', { class: 'muted' }, 'No dates picked yet.')];
+    const order = Array.from(per.entries()).sort((a, b) => b[1].length - a[1].length);
+    return order.map(([t, lists]) => el('details', { class: 'topic-grid result', open: true },
+      el('summary', null, el('span', { class: 'topic-name' }, t), el('span', { class: 'topic-count' }, plural(lists.length, 'person', 'people'))),
+      ...gridResult(q, lists).filter(Boolean)));
+  }
+
   function gridResult(q, answered) {
     const counts = new Map();
-    for (const v of answered) for (const x of [].concat(v)) counts.set(x, (counts.get(x) || 0) + 1);
+    for (const v of answered) for (const x of slotsOf(v)) counts.set(x, (counts.get(x) || 0) + 1);
     const max = Math.max(0, ...counts.values());
     const best = max ? resolveOptions(q).filter((k) => counts.get(k) === max) : [];
     const n = answered.length;
@@ -1841,7 +1979,9 @@
         manage ? twoTapButton('Delete', () => deleteAnswers(sv, r.key), (err) => note.replaceChildren(el('p', { class: 'form-error' }, editError(err)))) : null),
       el('dl', { class: 'facts' }, (sv.questions || []).map((q) => {
         const v = r.answers[q.id];
-        const text = Array.isArray(v) ? v.join(', ') : v == null ? '' : String(v);
+        const text = Array.isArray(v) ? v.join(', ')
+          : (v && typeof v === 'object') ? Object.entries(v).map(([k, a]) => k + ': ' + [].concat(a).join(', ')).join('; ')
+            : v == null ? '' : String(v);
         return text ? [el('dt', null, q.label), el('dd', null, linkify(text))] : null;
       }))))));
   }
@@ -1856,6 +1996,8 @@
       const block = el('div', { class: 'results-q' }, el('h5', null, q.label));
       if (q.type === 'member' || q.id === 'name') {
         block.replaceChildren(whoAnswered(q, rows));
+      } else if (q.type === 'grid' && q.perTopic) {
+        block.append(el('p', { class: 'muted small' }, 'Each topic shows when the people who picked it can make it.'), ...perTopicResult(q, rows, sv));
       } else if (q.type === 'grid') {
         block.append(...gridResult(q, answered).filter(Boolean));
       } else if (q.type === 'single' || q.type === 'multi' || q.type === 'select') {
@@ -2024,7 +2166,7 @@
     if (c === 'bad_code') return 'Only organizers can do this. Lock the site (link at the bottom) and open it again with the organizer code.';
     if (c === 'no_code_set') return 'Set GROUP_CODE and ORGANIZER_CODE in your Google script first. The README explains how.';
     if (c === 'invalid_argument') return 'Only the page owner and editors can change the schedule.';
-    if (/Missing form/i.test((err && err.message) || '')) return 'Your Google script is the old version. Update it (see the README) to edit the schedule here.';
+    if (/Missing form|Unknown request/i.test((err && err.message) || '')) return 'Your Google script is an older version, so it can\'t save this yet. Paste the newest script into Apps Script and deploy a new version (see the README).';
     return 'Couldn\'t save. Check your connection and try again.';
   }
 
@@ -2449,23 +2591,32 @@
     if (!v || typeof v !== 'object') return null;
     const strs = (a, n) => (Array.isArray(a) ? a.filter((x) => typeof x === 'string').map((x) => x.trim().slice(0, 120)).filter(Boolean).slice(0, n) : null);
     const day = (x) => (typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x) ? x : '');
-    return { topics: strs(v.topics, 60), from: day(v.from), to: day(v.to), weekdays: v.weekdays !== false, columns: strs(v.columns, 8), closes: day(v.closes), hideTopics: v.hideTopics === true, hideTimes: v.hideTimes === true };
+    return {
+      topics: strs(v.topics, 60), from: day(v.from), to: day(v.to), weekdays: v.weekdays !== false, columns: strs(v.columns, 8), closes: day(v.closes),
+      maxTopics: Math.max(0, Math.min(60, parseInt(v.maxTopics, 10) || 0)), perTopic: typeof v.perTopic === 'boolean' ? v.perTopic : undefined,
+      dateTopics: strs(v.dateTopics, 30)
+    };
   }
 
+  // Step 1 ("vote") gets the topic list; step 2 ("dates") gets the dates, times and the topics to schedule.
   function applyVoteSettings() {
     const v = S.voteSettings;
     S.surveys = (S.baseSurveys || []).map((sv) => {
-      if (sv.id !== 'vote' || !v) return sv;
+      if (!v || (sv.id !== 'vote' && sv.id !== 'dates')) return sv;
       const copy = JSON.parse(JSON.stringify(sv));
       for (const q of copy.questions || []) {
-        if (q.id === 'topics' && v.topics && v.topics.length) q.options = v.topics;
+        if (q.id === 'topics') {
+          if (v.topics && v.topics.length) q.options = v.topics;
+          if (v.maxTopics > 0) q.max = v.maxTopics; else delete q.max;
+        }
         if (q.type === 'grid') {
           if (v.from && v.to) q.rows = { from: v.from, to: v.to, weekdays: v.weekdays };
           if (v.columns && v.columns.length) q.columns = v.columns;
+          if (typeof v.perTopic === 'boolean') q.perTopic = v.perTopic;
+          if (Array.isArray(v.dateTopics)) q.topicList = v.dateTopics;
         }
       }
-      copy.closes = v.closes || '';
-      copy.questions = (copy.questions || []).filter((q) => !(v.hideTopics && q.id === 'topics') && !(v.hideTimes && q.type === 'grid'));
+      if (sv.id === 'vote' && v.closes) copy.closes = v.closes;
       return copy;
     });
     const f = (S.settings && S.settings.forms) || {};
@@ -2476,8 +2627,16 @@
       if (t.title) c.title = t.title;
       if (t.description) c.description = t.description;
       if (t.submitLabel) c.submitLabel = t.submitLabel;
+      if (typeof t.closes === 'string') c.closes = t.closes;
+      if (t.closed === true) c.status = 'closed';
+      if (t.closed === false) c.status = 'open';
       for (const q of c.questions || []) if (t.labels && t.labels[q.id]) q.label = t.labels[q.id];
       return c;
+    });
+    S.surveys = S.surveys.map((sv) => {
+      const g = (sv.questions || []).find((q) => q.type === 'grid' && q.perTopic && !q.topicsFrom);
+      if (!g || (g.topicList && g.topicList.length)) return sv;
+      return Object.assign({}, sv, { status: 'closed', closedNote: 'Step 2 opens once the organizers choose which topics from step 1 to schedule.' });
     });
   }
 
@@ -2553,7 +2712,7 @@
       } catch (err) {
         save.disabled = false;
         save.textContent = 'Save';
-        if (note) { note.className = 'chat-note form-error'; note.textContent = 'Couldn\'t save the change. Try again.'; }
+        if (note) { note.className = 'chat-note form-error'; note.textContent = /Unknown request/i.test((err && err.message) || '') ? 'Editing needs the newest Google script. Ask an organizer to update it.' : 'Couldn\'t save the change. Try again.'; }
       }
     });
     setTimeout(() => ta.focus(), 0);
@@ -2706,6 +2865,7 @@
         note.textContent = 'Shared ' + file.name + '.';
       } catch (err) {
         bad(err && err.code === 'bad_code' ? 'Your code no longer works. Reload and enter the group code.'
+          : /Unknown request/i.test((err && err.message) || '') ? 'The Google script is an older version. An organizer needs to update it before files can be shared.'
           : /type|extension|unsupported/i.test((err && (err.message || err.code)) || '') ? 'This file type can\'t be uploaded here. Try a PDF.'
             : 'Couldn\'t upload. Check your connection and try again.');
       }
@@ -2737,7 +2897,11 @@
       if (!f || typeof f !== 'object') continue;
       const labels = {};
       if (f.labels && typeof f.labels === 'object') for (const k of Object.keys(f.labels).slice(0, 30)) labels[k] = cleanText(f.labels[k], 200);
-      out[id] = { title: cleanText(f.title, 120), description: cleanText(f.description, 600), submitLabel: cleanText(f.submitLabel, 40), labels };
+      out[id] = {
+        title: cleanText(f.title, 120), description: cleanText(f.description, 600), submitLabel: cleanText(f.submitLabel, 40), labels,
+        closes: typeof f.closes === 'string' && (f.closes === '' || /^\d{4}-\d{2}-\d{2}$/.test(f.closes)) ? f.closes : undefined,
+        closed: typeof f.closed === 'boolean' ? f.closed : undefined
+      };
     }
     return out;
   }
@@ -2807,7 +2971,8 @@
       el('span', { class: 'org-label' }, 'Organizer tools'),
       b('Site info', openInfoEditor),
       b('Schedule', () => openEditor(null)),
-      b('Vote', () => openFormEditor('vote')),
+      b('Topic vote', () => openFormEditor('vote')),
+      S.surveys.some((v) => v.id === 'dates') ? b('Date vote', () => openFormEditor('dates')) : null,
       S.surveys.some((v) => v.id === 'present') ? b('Proposal form', () => openFormEditor('present')) : null,
       b('Members', openMembersEditor),
       b('Add paper', () => openPaperEditor(null))));
@@ -2898,74 +3063,124 @@
 
   // ---- forms (wording, and for the vote: topics, dates and times)
 
+  function topTopicsFromStep1() {
+    const sv = S.surveys.find((v) => v.id === 'vote');
+    if (!sv) return [];
+    const counts = new Map();
+    for (const r of latestRows(sv)) for (const t of [].concat(r.answers.topics || [])) counts.set(t, (counts.get(t) || 0) + 1);
+    return Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).map(([t, n]) => ({ t, n }));
+  }
+
   function openFormEditor(id) {
     const sv = S.surveys.find((v) => v.id === id);
     if (!sv) return;
     S.dialogMode = 'form';
     S.formDirty = false;
+    const cur = currentVoteSettings();
+    const lines = (t) => t.value.split('\n').map((x) => x.trim()).filter(Boolean);
     const fTitle = el('input', { type: 'text' });
     fTitle.value = sv.title || '';
     const fDesc = el('textarea', { rows: 3 });
     fDesc.value = sv.description || '';
     const fSubmit = el('input', { type: 'text' });
     fSubmit.value = sv.submitLabel || 'Submit';
+    const fOpen = el('input', { type: 'checkbox', id: 'fe-open' });
+    fOpen.checked = sv.status !== 'closed' || !!sv.closedNote;
+    const fClose = el('input', { type: 'date' });
+    fClose.value = sv.closes || '';
     const labelInputs = (sv.questions || []).map((q) => {
       const i = el('input', { type: 'text' });
       i.value = q.label || '';
       return { q, i };
     });
-    const parts = [
-      field('fe-title', 'Form title', fTitle),
-      field('fe-desc', 'Instructions', fDesc),
-      el('fieldset', { class: 'q' }, el('legend', null, 'Question wording'),
-        labelInputs.map(({ q, i }, n) => field('fe-q-' + n, (q.type === 'member' ? 'Name question' : q.type === 'grid' ? 'Dates and times question' : 'Question ' + (n + 1)), i))),
-      field('fe-submit', 'Button text', fSubmit)
-    ];
+    const parts = [];
+    let topicsBox = null;
+    let maxBox = null;
+    let d = null;
 
-    let vote = null;
-    if (id === 'vote') {
-      const cur = currentVoteSettings();
-      vote = {
-        topics: el('textarea', { rows: 8 }), from: el('input', { type: 'date' }), to: el('input', { type: 'date' }),
-        week: el('input', { type: 'checkbox', id: 'fe-week' }), cols: el('textarea', { rows: 4 }), close: el('input', { type: 'date' }),
-        askTopics: el('input', { type: 'checkbox', id: 'fe-ask-topics' }), askTimes: el('input', { type: 'checkbox', id: 'fe-ask-times' })
-      };
-      vote.topics.value = cur.topics.join('\n');
-      vote.from.value = cur.from;
-      vote.to.value = cur.to;
-      vote.week.checked = cur.weekdays;
-      vote.cols.value = cur.columns.join('\n');
-      vote.close.value = cur.closes;
-      vote.askTopics.checked = !cur.hideTopics;
-      vote.askTimes.checked = !cur.hideTimes;
-      parts.unshift(
-        el('fieldset', { class: 'q' }, el('legend', null, 'Questions in the vote'),
-          el('label', { class: 'choice', for: 'fe-ask-topics' }, vote.askTopics, el('span', null, 'Ask about topics')),
-          el('label', { class: 'choice', for: 'fe-ask-times' }, vote.askTimes, el('span', null, 'Ask about dates and times'))),
-        field('fe-topics', 'Topics, one per line', vote.topics, 'Add a line to add a topic, delete a line to remove it. Votes already given are kept.'),
-        el('div', { class: 'ed-row two' }, field('fe-from', 'Dates from', vote.from), field('fe-to', 'Dates to', vote.to)),
-        el('label', { class: 'choice', for: 'fe-week' }, vote.week, el('span', null, 'Weekdays only (skip Saturday and Sunday)')),
-        field('fe-cols', 'Time slots, one per line', vote.cols, 'For example: 11 AM–12 PM'),
-        field('fe-close', 'Vote closes on (optional)', vote.close),
-        el('hr', { class: 'editor-hr' }));
+    if (id === 'vote' && cur) {
+      topicsBox = el('textarea', { rows: 8 });
+      topicsBox.value = cur.topics.join('\n');
+      maxBox = el('input', { type: 'number', min: 0, max: 60, step: 1, placeholder: 'No limit', class: 'num-input' });
+      maxBox.value = cur.maxTopics ? String(cur.maxTopics) : '';
+      parts.push(
+        field('fe-topics', 'Topics, one per line', topicsBox, 'Add a line to add a topic, delete a line to remove it. Votes already given are kept.'),
+        field('fe-max', 'How many topics can each person pick?', maxBox, 'Leave empty for no limit.'));
     }
 
-    editorShell(id === 'vote' ? 'Edit the vote' : 'Edit form: ' + sv.title, savingForm(parts, 'Save form', async () => {
-      if (vote) {
-        const lines = (t) => t.value.split('\n').map((x) => x.trim()).filter(Boolean);
-        const v = { topics: lines(vote.topics), from: vote.from.value, to: vote.to.value, weekdays: vote.week.checked, columns: lines(vote.cols), closes: vote.close.value, hideTopics: !vote.askTopics.checked, hideTimes: !vote.askTimes.checked };
-        if (!v.topics.length) throw userError('Add at least one topic.');
-        if (!v.from || !v.to) throw userError('Choose both dates.');
-        if (v.from > v.to) throw userError('The first date must come before the last date.');
-        if ((Date.parse(v.to) - Date.parse(v.from)) / 864e5 > 120) throw userError('Keep the date range under four months.');
-        if (!v.columns.length) throw userError('Add at least one time slot.');
+    if (id === 'dates' && cur) {
+      d = {
+        topics: el('textarea', { rows: 6 }), from: el('input', { type: 'date' }), to: el('input', { type: 'date' }),
+        week: el('input', { type: 'checkbox', id: 'fe-week' }), cols: el('textarea', { rows: 4 }), per: el('input', { type: 'checkbox', id: 'fe-per' })
+      };
+      d.topics.value = cur.dateTopics.join('\n');
+      d.from.value = cur.from;
+      d.to.value = cur.to;
+      d.week.checked = cur.weekdays;
+      d.cols.value = cur.columns.join('\n');
+      d.per.checked = cur.perTopic;
+      const ranked = topTopicsFromStep1();
+      const useTop = el('button', { class: 'btn', type: 'button' }, 'Fill in from step 1 results');
+      const rankNote = el('p', { class: 'hint' }, ranked.length
+        ? 'Step 1 so far: ' + ranked.slice(0, 8).map((x) => x.t + ' (' + x.n + ')').join(', ') + '.'
+        : 'No step 1 votes yet.');
+      useTop.addEventListener('click', () => {
+        if (!ranked.length) return;
+        d.topics.value = ranked.map((x) => x.t).join('\n');
+        d.topics.focus();
+      });
+      parts.push(
+        el('div', { class: 'q' },
+          el('label', { class: 'q-label', for: 'fe-dtopics' }, 'Topics to schedule, one per line'),
+          el('span', { class: 'hint' }, 'Members pick dates for each of these. Leave it empty to keep step 2 closed.'),
+          rankNote,
+          el('div', { class: 'button-row', style: 'margin:4px 0 8px' }, useTop),
+          Object.assign(d.topics, { id: 'fe-dtopics' })),
+        el('label', { class: 'choice', for: 'fe-per' }, d.per, el('span', null, 'Ask dates separately for each topic (untick for one shared date grid)')),
+        el('div', { class: 'ed-row two' }, field('fe-from', 'Dates from', d.from), field('fe-to', 'Dates to', d.to)),
+        el('label', { class: 'choice', for: 'fe-week' }, d.week, el('span', null, 'Weekdays only (skip Saturday and Sunday)')),
+        field('fe-cols', 'Time slots, one per line', d.cols, 'For example: 11 AM–12 PM'));
+    }
+
+    parts.push(
+      el('hr', { class: 'editor-hr' }),
+      el('label', { class: 'choice', for: 'fe-open' }, fOpen, el('span', null, 'Open for answers')),
+      field('fe-close', 'Closes on (optional)', fClose),
+      field('fe-title', 'Title', fTitle),
+      field('fe-desc', 'Instructions', fDesc),
+      el('fieldset', { class: 'q' }, el('legend', null, 'Question wording'),
+        labelInputs.map(({ q, i }, n) => field('fe-q-' + n, q.type === 'member' ? 'Name question' : q.type === 'grid' ? 'Dates and times question' : 'Question ' + (n + 1), i))),
+      field('fe-submit', 'Button text', fSubmit));
+
+    const heading = id === 'vote' ? 'Step 1: topic vote' : id === 'dates' ? 'Step 2: date vote' : 'Edit form: ' + sv.title;
+    editorShell(heading, savingForm(parts, 'Save', async () => {
+      if (cur && (topicsBox || d)) {
+        const v = Object.assign({}, cur);
+        if (topicsBox) {
+          v.topics = lines(topicsBox);
+          if (!v.topics.length) throw userError('Add at least one topic.');
+          v.maxTopics = parseInt(maxBox.value, 10) || 0;
+          v.closes = fClose.value;
+        }
+        if (d) {
+          v.dateTopics = lines(d.topics);
+          v.perTopic = d.per.checked;
+          v.from = d.from.value;
+          v.to = d.to.value;
+          v.weekdays = d.week.checked;
+          v.columns = lines(d.cols);
+          if (!v.from || !v.to) throw userError('Choose both dates.');
+          if (v.from > v.to) throw userError('The first date must come before the last date.');
+          if ((Date.parse(v.to) - Date.parse(v.from)) / 864e5 > 120) throw userError('Keep the date range under four months.');
+          if (!v.columns.length) throw userError('Add at least one time slot.');
+        }
         await saveSetting('vote', v);
         setVoteSettings(v);
       }
       const forms = Object.assign({}, (S.settings && S.settings.forms) || {});
       const labels = {};
       for (const { q, i } of labelInputs) if (i.value.trim()) labels[q.id] = i.value.trim();
-      forms[id] = { title: fTitle.value.trim(), description: fDesc.value.trim(), submitLabel: fSubmit.value.trim(), labels };
+      forms[id] = { title: fTitle.value.trim(), description: fDesc.value.trim(), submitLabel: fSubmit.value.trim(), labels, closes: fClose.value, closed: !fOpen.checked };
       await saveSetting('forms', forms);
       S.formDirty = false;
       setSetting('forms', forms);
@@ -3034,7 +3249,7 @@
     if (c.contactEmail) links.push(el('a', { href: 'mailto:' + c.contactEmail }, 'Contact'));
     if (B.kind === 'sheet' && S.access) {
       links.push(el('button', { class: 'btn btn-quiet footer-lock', type: 'button', onclick: () => lockDevice('Locked. Enter the code to open the site again.') },
-        isOrganizer() ? 'Lock this device (organizer)' : 'Lock this device'));
+        isOrganizer() ? 'Sign out (organizer)' : 'Sign out'));
     }
     links.push(el('a', { href: '#top' }, 'Back to top'));
     if (c.sampleNote) $('#sample-note').textContent = c.sampleNote;

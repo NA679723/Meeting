@@ -3,7 +3,7 @@
 A members-only site for the reading group, hosted free on GitHub Pages:
 
 - **Next session** at the top, filled in automatically from the schedule
-- **Vote**: pick your name, up to three topics, and the dates and times you can make; live results show who has voted
+- **Vote, in two steps**: step 1, members pick the topics they want to read (or add their own). Step 2, members pick the dates and times they can make for each chosen topic. Live results show who has voted and the best slot for each topic
 - **Schedule**: month calendar and list of sessions, with "Add to Google Calendar"
 - **Chat**: a simple group chat (edit your own messages)
 - **Shared files**: upload slides, notes or PDFs for the group
@@ -17,7 +17,7 @@ The public files in this repository hold no names, votes, sessions or chat. All 
 - **Group code**: for members. Opens the site, lets them vote, propose a paper and chat.
 - **Organizer code**: opens the site and also shows **Add a session / Edit schedule**, **Edit members**, **Manage answers** and **Delete** on chat messages.
 
-Each device remembers the code until someone clicks **Lock this device** at the bottom of the page. Search engines are asked not to list the site. Anyone who has the group code can pass it on, so change the code in the script if it leaks.
+The site asks for the code again after the browser tab is closed. Someone who ticks **Keep me signed in on this device** stays signed in until they click **Sign out** at the bottom of the page. Codes remembered by older versions of the site are forgotten. Search engines are asked not to list the site. Anyone who has the group code can pass it on, so change the code in the script if it leaks.
 
 ## Set up (one time)
 
@@ -41,7 +41,8 @@ Open the site with the organizer code. An **Organizer tools** bar appears at the
 
 - **Site info**: group name, description, lab, regular meeting time, usual place and online link, quick start-time buttons, contact email
 - **Schedule**: add, edit or delete sessions (date, time, topic, presenter, reading, what to prepare, slides and recording links)
-- **Vote**: topics, date range, time slots, closing date, and the wording of every question
+- **Topic vote** (step 1): the topic list, how many topics each person can pick, open or closed, closing date, and the wording
+- **Date vote** (step 2): which topics go to step 2 ("Fill in from step 1 results" ranks them by votes), date range, time slots, one grid per topic or a shared grid, open or closed, and the wording. Step 2 stays closed until it has at least one topic
 - **Proposal form**: the wording of the Volunteer to present form
 - **Members**: one name per line
 - **Add paper**: add papers to the library; **Edit** and **Delete** appear next to them

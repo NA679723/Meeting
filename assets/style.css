@@ -150,7 +150,7 @@ ul, ol { margin: 0; padding: 0; }
 .segmented button:hover { color: var(--ink); background: var(--paper); }
 .segmented button[aria-pressed="true"] { background: var(--ink); color: var(--paper); }
 
-input[type="search"], input[type="text"], input[type="url"], input[type="date"], input[type="time"], input[type="password"], select, textarea {
+input[type="search"], input[type="text"], input[type="number"], input[type="url"], input[type="date"], input[type="time"], input[type="password"], select, textarea {
   font: 400 15px/1.4 var(--sans);
   color: var(--ink);
   background: var(--surface);
@@ -617,8 +617,10 @@ details.session.flash > summary { animation: flash 1.2s ease-out; }
 /* Members-only lock (GitHub Pages with a group code) */
 body.locked .private { display: none !important; }
 .lock-form { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0 6px; }
-.lock-form input { flex: 1 1 220px; max-width: 320px; font-size: 16px; padding: 11px 14px; }
+.lock-form input[type="password"] { flex: 1 1 220px; max-width: 320px; font-size: 16px; padding: 11px 14px; }
+.lock-keep input { flex: none; }
 .footer-lock { padding: 0; }
+.lock-keep { flex-basis: 100%; font-size: 14.5px; padding: 2px 0 0; }
 
 /* Chat */
 .chat-box { max-width: 780px; background: var(--surface); border: 1px solid var(--rule); border-radius: var(--radius); }
@@ -686,6 +688,18 @@ body.locked .private { display: none !important; }
 .chip-x { border: 0; background: transparent; color: var(--muted); font: 600 18px/1 var(--sans); width: 28px; height: 32px; border-radius: 6px; cursor: pointer; }
 .chip-x:hover { color: var(--warn-rule); background: var(--paper); }
 .chip-x.armed { width: auto; padding: 0 8px; font-size: 13px; color: var(--warn-rule); border: 1px solid var(--warn-rule); }
+
+/* Dates for each topic */
+.per-topic { display: grid; gap: 12px; }
+.topic-grid { border: 1px solid var(--rule); border-radius: var(--radius); background: var(--surface); padding: 0 14px; }
+.topic-grid > summary { cursor: pointer; display: flex; align-items: baseline; gap: 12px; padding: 12px 0; font-weight: 600; }
+.topic-grid[open] > summary { border-bottom: 1px solid var(--rule); margin-bottom: 8px; }
+.topic-count { font-weight: 400; font-size: 13.5px; color: var(--muted); }
+.topic-tools { margin: 2px 0 4px; }
+.topic-tools .btn { padding-inline: 0; }
+.topic-grid .slot-wrap { padding-bottom: 12px; }
+.topic-grid.result .best-line { margin-top: 6px; }
+.num-input { max-width: 140px; }
 
 /* ---------- Footer ---------- */
 

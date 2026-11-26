@@ -131,7 +131,9 @@ function answer_(body) {
   if (text.length > 8000) return json_({ ok: false, error: 'Answer too long.' });
   const summary = Object.keys(answers).map(function (k) {
     const v = answers[k];
-    return k + ': ' + (Array.isArray(v) ? v.join(', ') : String(v));
+    if (Array.isArray(v)) return k + ': ' + v.join(', ');
+    if (v && typeof v === 'object') return k + ': ' + Object.keys(v).map(function (t) { return t + ' (' + [].concat(v[t]).join(', ') + ')'; }).join('; ');
+    return k + ': ' + String(v);
   }).join(' | ');
   tab_('Responses').appendRow([new Date().toISOString(), form, key, summary, text]);
   return json_({ ok: true });
